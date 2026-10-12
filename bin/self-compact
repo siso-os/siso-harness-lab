@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""self-compact: a Claude agent in herdr compacts its own context and carries on.
+
+Claude Code will not let a model run /compact on itself, but herdr can type into the agent's
+own pane once it is idle. The agent writes its checkpoint, tells whoever needs to know (the
+self-compact skill says where), runs `self-compact go`, and ends its turn. One detached waiter
+then types `/compact <focus>` when the pane is idle, waits for the compaction to finish, types
+the resume prompt, and exits.
+
+  self-compact check                       this pane's context use, from its footer (`NN% ctx`)
+  self-compact go --checkpoint PATH [--focus TEXT] [--resume TEXT] [--timeout MIN]
+  self-compact status                      the waiter armed for this pane, if any
+
+Works for herdr's own Claude panes and for Agent Base hosted chats (siso-host). Refuses outside herdr (no HERDR_PANE_ID), and when a waiter is already armed for the pane. It only ever types into the pane
+in HERDR_PANE_ID, the caller's own. Nothing is scheduled and nothing compacts an agent: the
+context ping (hooks/context-ping.mjs) only informs, and the agent decides (DECISIONS.md, 1 Oct). Log: ~/.local/state/self-compact/log.jsonl.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+STATE = Path.home() / ".local/state/self-compact"
+LOG = STATE / "log.jsonl"
+CTX_RE = re.compile(r"(\d{1,3})% ctx")
+READY = {"idle", "done"}
+POLL = 2.0
+
+
+def log(event, **kw):
+    STATE.mkdir(parents=True, exist_ok=True)
+    rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": event, **kw}
+    with LOG.open("a") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
+def herdr(*args, check=True):
+    p = subprocess.run(["herdr", *args], capture_output=True, text=True, timeout=30)
+    if check and p.returncode != 0:
+        raise RuntimeError(f"herdr {' '.join(args[:2])} failed: {p.stderr.strip()[:300]}")
+    return p.stdout
+
+
+HOSTS = Path.home() / ".local/state/agent-base/hosts"
+
+
+def host(pane):
+    """The Agent Base host record when `pane` runs a hosted chat (siso-host), else None. Hosted owners are
+    Claude, but herdr does not see them as Claude, so before 7 Oct every owner's self-compact was refused."""
+    try:
+        return json.loads((HOSTS / f"{pane.replace(':', '_')}.json").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def agent(pane):
+    """The agent in `pane` as herdr reports it (or as its Agent Base host record does), or None."""
+    try:
+        out = json.loads(herdr("agent", "get", pane))
+        ag = out.get("result", {}).get("agent") or out.get("result")
+    except Exception:
+        ag = None
+    if ag and ag.get("agent") == "claude":
+        return ag
+    h = host(pane)
+    if h and h.get("pid"):
+        try:
+            os.kill(h["pid"], 0)
+        except OSError:
+            return ag
+        return {"agent": "claude", "agent_status": h.get("state"), "agent_session": {"value": h.get("session")},
+                "hosted": True}
+    return ag
+
+
+def ctx_pct(pane):
+    h = host(pane)
+    if h and isinstance(h.get("ctx"), dict) and h["ctx"].get("pct") is not None:
+        return int(h["ctx"]["pct"])
+    """Context use from the pane's status-line footer (the last `NN% ctx` on screen)."""
+    try:
+        text = herdr("pane", "read", pane, "--source", "recent", "--lines", "12")
+    except Exception:
+        return None
+    hits = CTX_RE.findall(text)
+    return int(hits[-1]) if hits else None
+
+
+def transcript(session):
+    """The session's transcript file, or None."""
+    if not session:
+        return None
+    homes = {os.environ.get("CLAUDE_CONFIG_DIR") or "", str(Path.home() / ".claude")}
+    for home in filter(None, homes):
+        for t in Path(home, "projects").glob(f"*/{session}.jsonl"):
+            return t
+    return None
+
+
+def compactions(session):
+    """How many compactions the session's transcript records (None if it cannot be found)."""
+    t = transcript(session)
+    try:
+        return t.read_text(errors="replace").count('"compactMetadata"') if t else None
+    except OSError:
+        return None
+
+
+def resumed_since_compact(session):
+    """True when the transcript shows an assistant turn after the last compaction: something (a task
+    notification, a message) already woke the agent, so a resume prompt would only interrupt."""
+    t = transcript(session)
+    try:
+        lines = t.read_text(errors="replace").splitlines() if t else []
+    except OSError:
+        return False
+    last = max((i for i, ln in enumerate(lines) if '"compactMetadata"' in ln), default=None)
+    if last is None:
+        return False
+    for ln in lines[last + 1:]:
+        try:
+            if json.loads(ln).get("type") == "assistant":
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def input_text(pane):
+    """What someone has really typed into the pane's input box ('' when empty, None when the box isn't on screen).
+    Read with styling: Claude Code's suggested next prompt is dimmed ghost text in an empty box, not typing.
+    On 1 Oct the resume prompt landed on the end of a message Shaan was dictating and sent it."""
+    try:
+        raw = herdr("pane", "read", pane, "--source", "recent", "--lines", "15", "--format", "ansi")
+    except Exception:
+        return None
+    lines = [ln for ln in raw.splitlines() if "\u276f" in ln]
+    if not lines:
+        return None
+    s = lines[-1].split("\u276f", 1)[1]
+    s = re.sub(r"\x1b\[2m.*?(?:\x1b\[(?:0|22)m|$)", "", s)
+    s = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", s)
+    return s.replace("\xa0", " ").strip()
+
+def wait_input_empty(pane, seconds=300):
+    """Wait for nobody to be typing in the pane; False if someone still is after `seconds`."""
+    end = time.time() + seconds
+    while time.time() < end:
+        if not input_text(pane):
+            return True
+        time.sleep(3)
+    return False
+
+
+def lock_path(pane):
+    return STATE / f"{re.sub(r'[^A-Za-z0-9_-]', '_', pane)}.lock"
+
+
+def live_waiter(pane):
+    """The pid of the waiter armed for this pane, or None (a stale lock is removed)."""
+    lp = lock_path(pane)
+    try:
+        info = json.loads(lp.read_text())
+        os.kill(info["pid"], 0)
+        return info
+    except FileNotFoundError:
+        return None
+    except (ProcessLookupError, KeyError, ValueError):
+        lp.unlink(missing_ok=True)
+        return None
+
+
+def refuse(msg):
+    print(f"self-compact: refused: {msg}", file=sys.stderr)
+    log("refused", pane=os.environ.get("HERDR_PANE_ID"), reason=msg)
+    sys.exit(3)
+
+
+def own_pane():
+    pane = os.environ.get("HERDR_PANE_ID")
+    if os.environ.get("HERDR_ENV") != "1" or not pane:
+        refuse("not running inside a herdr pane (HERDR_PANE_ID unset); compact by hand with /compact")
+    # Agent Zero may compact itself too since Shaan, 7 Oct 18:35: "I even want agent zero to auto compact ... at 30%".
+    return pane
+
+
+def cmd_check(_a):
+    pane = own_pane()
+    pct = ctx_pct(pane)
+    if pct is None:
+        print(f"self-compact: no `NN% ctx` in pane {pane}'s footer", file=sys.stderr)
+        sys.exit(1)
+    advice = "compact at the next clean break" if pct >= 40 else "fine"
+    print(f"{pct}% ctx ({advice})")
+
+
+def cmd_status(_a):
+    pane = own_pane()
+    info = live_waiter(pane)
+    print(json.dumps(info) if info else f"no waiter armed for {pane}")
+
+
+def cmd_go(a):
+    pane = own_pane()
+    if not Path(a.checkpoint).expanduser().is_file():
+        refuse(f"checkpoint {a.checkpoint} does not exist; write it first")
+    held = live_waiter(pane)
+    if held:
+        refuse(f"a waiter (pid {held['pid']}) is already armed for {pane} since {held['armed']}")
+    ag = agent(pane)
+    if not ag or ag.get("agent") != "claude":
+        refuse(f"pane {pane} does not host a Claude agent herdr can see")
+    checkpoint = str(Path(a.checkpoint).expanduser().resolve())
+    resume = a.resume or f"Compacted. Read {checkpoint} and continue."
+    STATE.mkdir(parents=True, exist_ok=True)
+    out = (STATE / f"{lock_path(pane).stem}.out").open("a")
+    child = subprocess.Popen(
+        [sys.executable, os.path.abspath(__file__), "_wait", "--pane", pane,
+         "--session", (ag.get("agent_session") or {}).get("value", ""),
+         "--focus", a.focus or "", "--resume", resume, "--timeout", str(a.timeout)],
+        stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
+    lock_path(pane).write_text(json.dumps(
+        {"pid": child.pid, "pane": pane, "armed": time.strftime("%H:%M:%S"), "checkpoint": checkpoint}))
+    log("armed", pane=pane, pid=child.pid, ctx=ctx_pct(pane), checkpoint=checkpoint)
+    print(f"armed (pid {child.pid}). End your turn now: /compact goes in once {pane} is idle, "
+          f"then the resume prompt. Log: {LOG}")
+
+
+def wait_ready(pane, deadline, session=None):
+    """Block until the pane's agent has been idle for two polls in a row."""
+    seen = 0
+    while time.time() < deadline:
+        ag = agent(pane)
+        if not ag or ag.get("agent") != "claude":
+            raise RuntimeError(f"pane {pane} no longer hosts a Claude agent")
+        if session and (ag.get("agent_session") or {}).get("value") not in (session, None):
+            raise RuntimeError(f"pane {pane} now hosts a different session")
+        seen = seen + 1 if ag.get("agent_status") in READY else 0
+        if seen >= 2:
+            return
+        time.sleep(POLL)
+    raise TimeoutError("pane never went idle")
+
+
+def type_line(pane, text):
+    herdr("pane", "send-text", pane, text)
+    time.sleep(0.6)  # let the slash-command menu settle before Enter
+    herdr("pane", "send-keys", pane, "enter")
+
+
+def cmd_wait(a):
+    pane, deadline = a.pane, time.time() + a.timeout * 60
+    try:
+        wait_ready(pane, deadline, a.session or None)
+        before, marks = ctx_pct(pane), compactions(a.session)
+        if not wait_input_empty(pane):
+            raise RuntimeError("someone kept typing in the pane for 5 minutes; not compacting over them")
+        type_line(pane, f"/compact {a.focus}".rstrip())
+        log("compact-typed", pane=pane, ctx_before=before)
+        # Compaction: the agent works, then is idle again. Done when the transcript gains a compact
+        # marker or the footer shows less context; with neither signal readable, idle is enough.
+        time.sleep(5)
+        after = now = None
+        while time.time() < deadline:
+            wait_ready(pane, deadline)
+            after, now = ctx_pct(pane), compactions(a.session)
+            if (marks is not None and now is not None and now > marks) or \
+                    (after is not None and before is not None and after < before) or \
+                    (marks is None and before is None):
+                break
+            time.sleep(5)
+        else:
+            raise TimeoutError(f"no compaction seen (ctx stayed at {before}%)")
+        if resumed_since_compact(a.session):
+            log("resume-skipped", pane=pane, reason="the agent already resumed by itself", ctx_after=after, compactions=now)
+            return
+        if not wait_input_empty(pane):
+            log("resume-skipped", pane=pane, reason="someone kept typing in the pane", ctx_after=after, compactions=now)
+            return
+        type_line(pane, a.resume)
+        log("resumed", pane=pane, ctx_before=before, ctx_after=after, compactions=now)
+    except Exception as e:  # noqa: BLE001 - every failure is logged and the waiter exits
+        log("failed", pane=pane, error=str(e))
+        sys.exit(1)
+    finally:
+        lock_path(pane).unlink(missing_ok=True)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="self-compact", description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("check").set_defaults(fn=cmd_check)
+    sub.add_parser("status").set_defaults(fn=cmd_status)
+    g = sub.add_parser("go")
+    g.add_argument("--checkpoint", required=True, help="file the agent wrote: done, next, threads, paths")
+    g.add_argument("--focus", default="", help="what the compaction summary must keep")
+    g.add_argument("--resume", default="", help="first prompt after compaction")
+    g.add_argument("--timeout", type=float, default=45, help="minutes before the waiter gives up")
+    g.set_defaults(fn=cmd_go)
+    w = sub.add_parser("_wait")
+    for k in ("pane", "session", "focus", "resume"):
+        w.add_argument(f"--{k}", default="")
+    w.add_argument("--timeout", type=float, default=45)
+    w.set_defaults(fn=cmd_wait)
+    a = ap.parse_args()
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()

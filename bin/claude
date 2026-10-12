@@ -1,0 +1,14 @@
+#!/bin/bash
+# claude: the `claude` on PATH (~/.local/bin/claude links here). Shaan, 3 Oct ~14:50: "I don't like using fami's login ... normal
+# Claude runs to one of our accounts and you've got to run like Claude fami to connect to fami's account just to make it harder".
+# With no account chosen (no CLAUDE_CONFIG_DIR, no CLAUDE_CODE_OAUTH_TOKEN, no ANTHROPIC_API_KEY) it runs on lordsisodia
+# (~/.config/claude-siso-3). 3 Oct ~18:00: fuzeheritage's org disabled subscription access for Claude Code (a real call returned
+# "Your organization has disabled Claude subscription access"), so the default moved off it; SISO_CLAUDE_DEFAULT overrides. Anything already chosen (claude-siso, claude-siso-3, a token from one-home) passes straight through.
+# Fahmy's login (~/.claude's own Keychain login) is only `claude-fahmy`. Runs the newest installed version.
+V=$(ls "$HOME/.local/share/claude/versions" 2>/dev/null | sort -V | tail -1)
+REAL="$HOME/.local/share/claude/versions/$V"
+[ -n "$V" ] && [ -x "$REAL" ] || { echo "claude: no installed version under ~/.local/share/claude/versions" >&2; exit 127; }
+if [ -z "${CLAUDE_CONFIG_DIR:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+  export CLAUDE_CONFIG_DIR="${SISO_CLAUDE_DEFAULT:-$HOME/.config/claude-siso-3}"
+fi
+exec "$REAL" "$@"

@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""mini-sync — make the Mac mini a place where claude-siso and claude-siso-3 run the same way as on the laptop.
+
+SISO Labs moves to the mini (Shaan, 2 Oct ~18:00: "agent base should have been on the Mac Mini ... he should probably have
+the Mac Mini to himself"; A0 brief siso-firstmate/.agents/a0/tell/2026-10-02-siso-labs-to-mini.md, step 2). Run from the
+laptop; idempotent; touches only what is named here, never the mini's own ~/.claude (its older router setup) or any
+running agent's session. No secret is read, printed or copied: the Claude login is NOT synced (OAuth refresh tokens rotate,
+so one login shared by two machines would log one of them out); each account is logged in once on the mini, see mini-login.
+
+  mini-sync [--host mac-mini] [--dry-run]   sync, then check
+  mini-sync check [--host mac-mini]         verify only; exit 0 ready (launchers, hooks, caps), 1 not ready
+
+What it puts on the mini:
+  - the claude binary at the laptop's exact version (~/.local/share/claude/versions/<v>; ~/.local/bin/claude -> it)
+  - siso-harness-lab cloned from GitHub at origin/main (git pull --ff-only when present) and its bin/ tools linked into
+    ~/.local/bin where the name is free: claude-siso, claude-siso-3, heavy, codex-run, siso-task, self-compact ...
+  - ~/.claude-siso (the shared base: laptop's CLAUDE.md, hooks, hud, skills, agents, commands, lessons, and a settings.json
+    generated from the laptop's with paths pointed at it and the laptop-only hooks dropped, see config/mini-profile.json)
+    and ~/.config/claude-siso-3 (links into the base, its own projects/credentials), the same layout as the laptop.
+"""
+import json, os, re, shlex, subprocess, sys, tempfile
+
+HERE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+PROFILE = json.load(open(os.path.join(HERE, "config", "mini-profile.json")))
+HOME = os.path.expanduser("~")
+LAPTOP_CLAUDE = os.path.join(HOME, ".claude")
+BASE = "~/.claude-siso"
+SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "RemoteCommand=none"]
+PATHS = "export PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH; "
+
+
+def run(host, script, check=True, inp=None):
+    r = subprocess.run(SSH + [host, PATHS + script], capture_output=True, text=True, input=inp)
+    if check and r.returncode:
+        sys.exit(f"mini-sync: remote step failed ({r.returncode}): {script[:90]}\n{r.stderr.strip()[-300:]}")
+    return r
+
+
+def rsync(host, src, dst, *flags):
+    r = subprocess.run(["rsync", "-aL", "--delete", "--exclude=node_modules", "--exclude=.DS_Store", *flags, "-e", " ".join(SSH), src, f"{host}:{dst}"],
+                       capture_output=True, text=True)
+    if r.returncode not in (0, 23):  # 23 = some broken links skipped
+        sys.exit(f"mini-sync: rsync {src} failed ({r.returncode}): {r.stderr.strip()[-300:]}")
+    return r
+
+
+def mini_settings():
+    """The laptop's settings.json for a standalone ~/.claude-siso on the mini: laptop-only hooks dropped, paths repointed."""
+    s = json.load(open(os.path.join(LAPTOP_CLAUDE, "settings.json")))
+    drop = PROFILE["drop_hook_substrings"]
+    kept, dropped = {}, []
+    for ev, blocks in s.get("hooks", {}).items():
+        nb = []
+        for b in blocks:
+            hs = [h for h in b.get("hooks", []) if not any(d in h.get("command", "") for d in drop)]
+            dropped += [h["command"] for h in b.get("hooks", []) if h not in hs]
+            if hs:
+                nb.append({**b, "hooks": hs})
+        if nb:
+            kept[ev] = nb
+    s["hooks"] = kept
+    for k in PROFILE["drop_settings_keys"]:
+        s.pop(k, None)
+    text = json.dumps(s, indent=2, ensure_ascii=False)
+    text = text.replace(f"{HOME}/.claude/console/bin:", "")  # the console runs on the laptop only
+    for a, b in ((f"{HOME}/.claude/", f"{HOME}/.claude-siso/"), ("$HOME/.claude/", "$HOME/.claude-siso/"), ("~/.claude/", "~/.claude-siso/")):
+        text = text.replace(a, b)
+    return text + "\n", dropped
+
+
+def sync(host, dry):
+    vdir = os.path.join(HOME, ".local/share/claude/versions")  # ~/.local/bin/claude is a wrapper now (bin/claude)
+    ver = sorted(os.listdir(vdir), key=lambda v: [int(x) if x.isdigit() else x for x in v.split(".")])[-1]
+    text, dropped = mini_settings()
+    print(f"claude {ver}; settings.json: {sum(len(b['hooks']) for bl in json.loads(text)['hooks'].values() for b in bl)} hooks kept, "
+          f"{len(dropped)} laptop-only dropped")
+    if dry:
+        for d in dropped:
+            print("  drop:", d.replace(HOME, "~")[:100])
+        return
+    run(host, f"mkdir -p ~/.local/share/claude/versions ~/.local/bin {BASE} ~/.config/claude-siso-3")
+    if run(host, f"test -x ~/.local/share/claude/versions/{ver}", check=False).returncode:
+        print(f"copying claude {ver} ...")
+        rsync(host, os.path.join(HOME, ".local/share/claude/versions", ver), f"~/.local/share/claude/versions/{ver}")
+    run(host, f"ln -sfn ~/.local/share/claude/versions/{ver} ~/.local/bin/claude")
+    lab = "~/SISO_Workspace/SISO_Agents/siso-harness-lab"
+    run(host, f"mkdir -p {lab}; cd {lab}; if [ -d .git ]; then git pull -q --ff-only; "
+              f"else git clone -q https://github.com/sisodias/siso-harness-lab.git . ; fi; git log --oneline -1")
+    # tools: link every bin/ tool whose name is free (never replace what the mini already has)
+    run(host, f"cd {lab}/bin; for f in *; do [ -f \"$f\" ] && [ -x \"$f\" ] || continue; "
+              f"[ -e ~/.local/bin/$f ] && [ ! -L ~/.local/bin/$f ] && continue; ln -sfn {lab}/bin/$f ~/.local/bin/$f; done")
+    for d in PROFILE["copy_dirs"]:
+        src = os.path.join(LAPTOP_CLAUDE, d)
+        if os.path.isdir(src):
+            rsync(host, src + "/", f"{BASE}/{d}/")
+    for f in ("CLAUDE.md",):
+        rsync(host, os.path.join(LAPTOP_CLAUDE, f), f"{BASE}/{f}")
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as t:
+        t.write(text)
+    rsync(host, t.name, f"{BASE}/settings.json")
+    os.unlink(t.name)
+    links = " ".join(f"{n}" for n in PROFILE["login3_links"])
+    run(host, f"cd ~/.config/claude-siso-3; for n in {links}; do [ -e ../../.claude-siso/$n ] && ln -sfn ~/.claude-siso/$n $n; done; mkdir -p projects")
+
+
+def check(host):
+    """Verify on the mini: tools, hooks, caps, launchers. Returns problems (empty = ready)."""
+    script = r'''
+import json, os, re, subprocess
+H = os.path.expanduser("~"); bad = []
+def sh(c): return subprocess.run(c, shell=True, capture_output=True, text=True)
+s = json.load(open(H + "/.claude-siso/settings.json"))
+n = 0
+for ev, bl in s["hooks"].items():
+    for b in bl:
+        for h in b["hooks"]:
+            n += 1
+            for m in re.findall(r"(/Users/[^\s'\"]+\.(?:mjs|cjs|js|sh))", h["command"]):
+                if not os.path.exists(m): bad.append("hook file missing: " + m)
+                elif m.endswith((".mjs", ".cjs", ".js")) and sh("node --check " + m).returncode: bad.append("hook does not parse: " + m)
+print("hooks", n)
+for l in ("claude-siso", "claude-siso-3"):
+    p = H + "/.local/bin/" + l
+    if not os.path.exists(p): bad.append("launcher missing: " + l)
+v = sh("claude --version").stdout.strip(); print("claude", v)
+caps = sh("""bash -c 'source ~/SISO_Workspace/SISO_Agents/siso-harness-lab/bin/context-cap.sh; siso_context_cap -n AGENT-BASE; echo $SISO_CONTEXT_CAP $SISO_CONTEXT_TIER'""").stdout.strip()
+print("AGENT-BASE cap:", caps)
+if caps != "600000 heavy": bad.append("caps not resolving: " + caps)
+for l, d in (("claude-siso", "~/.claude-siso"), ("claude-siso-3", "~/.config/claude-siso-3")):
+    st = sh(f"CLAUDE_CONFIG_DIR={d} claude auth status").stdout
+    j = json.loads(st) if st.strip().startswith("{") else {}
+    print(l, "logged in" if j.get("loggedIn") else "NOT logged in", j.get("email") or "")
+    if not j.get("loggedIn"): bad.append(l + " is not logged in on the mini (mini-login " + l + ")")
+print("PROBLEMS", json.dumps(bad))
+'''
+    r = run(host, "python3 -", check=False, inp=script)
+    out = r.stdout.strip().splitlines()
+    for l in out[:-1]:
+        print("  " + l)
+    return json.loads(out[-1].split(" ", 1)[1]) if out and out[-1].startswith("PROBLEMS") else [f"check did not run: {r.stderr.strip()[-200:]}"]
+
+
+def main(argv):
+    host = argv[argv.index("--host") + 1] if "--host" in argv else "mac-mini"
+    if argv[:1] == ["check"]:
+        probs = check(host)
+    else:
+        sync(host, "--dry-run" in argv)
+        if "--dry-run" in argv:
+            return 0
+        probs = check(host)
+    for p in probs:
+        print("  NOT READY:", p)
+    print("mini ready" if not probs else f"{len(probs)} open")
+    return 0 if not probs else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

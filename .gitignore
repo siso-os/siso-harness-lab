@@ -1,0 +1,15 @@
+node_modules/
+*.jsonl
+*.log
+.DS_Store
+!.agents/owners.log
+.local/
+.loop.lock/
+__pycache__/
+requests/*.lock
+!requests/requests.jsonl
+
+# brain composer backups (moved from SISO_Agent_Base 2026-09-24, where they were ignored too)
+brain/*.bak-*
+# The token ledger: verdicts are the reviewers' record (kept); spend.jsonl is rebuilt by bin/spend-ledger build (ignored).
+!.agents/efficiency/verdicts.jsonl

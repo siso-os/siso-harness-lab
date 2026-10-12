@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>herdr-resurrect — auto-restore herdr agents after reboot</title>
+<style>
+  body { font: 15px/1.55 -apple-system, system-ui, sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1 { font-size: 1.5rem; } h2 { font-size: 1.15rem; margin-top: 1.8rem; border-bottom: 1px solid #ddd; padding-bottom: .3rem; }
+  code, pre { font-family: ui-monospace, Menlo, monospace; font-size: .86em; }
+  pre { background: #f5f5f5; padding: .8rem 1rem; border-radius: 6px; overflow-x: auto; }
+  code { background: #f0f0f0; padding: .1em .35em; border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; margin: .6rem 0; }
+  th, td { border: 1px solid #ddd; padding: .45rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #fafafa; }
+  .k { color: #0a7d2c; font-weight: 600; }
+  .note { background: #fff8e1; border-left: 3px solid #f0b000; padding: .6rem .9rem; margin: .8rem 0; }
+</style>
+</head>
+<body>
+<h1>herdr-resurrect</h1>
+<p>When Shaan powers off or reboots the laptop, this makes his herdr terminal workspace come back to what it was — <strong>including the AI agents</strong> that were running in each pane, resumed into their prior conversation.</p>
+
+<div class="note">
+<strong>Verified truth (2026-07-02, from <code>herdr-server.log</code>):</strong> herdr <em>natively</em> restores the full topology on server start — workspaces (+ custom names), tabs (+ labels), panes (+ cwd) — persisted to <code>~/.config/herdr/session.json</code> every few seconds. But it spawns those panes as <strong>bare shells</strong>; it does NOT relaunch the claude/codex agents. Shaan used to re-start each agent by hand after every reboot. <strong>That manual step is the only gap this tool fills.</strong>
+</div>
+
+<h2>What it does</h2>
+<ol>
+  <li><span class="k">herdr-snapshot</span> — every 5 min, archives herdr's own <code>session.json</code> (topology + each pane's bound <code>agent_session</code> UUID) to <code>~/.local/state/herdr-resurrect/</code>, keeping the last 10 + a <code>latest.json</code> pointer. We do NOT re-derive topology — herdr already persists it faithfully; the archive just guards against a bad write and captures the alive-agent binding.</li>
+  <li><span class="k">herdr-restore</span> — reads the desired agent bindings (snapshot-first, merged with live <code>session.json</code>), matches each to its now-bare live pane by <code>workspace_id</code> + tab, and runs the resume command into it:
+    <pre>claude --resume &lt;uuid&gt; --dangerously-skip-permissions
+codex resume &lt;uuid&gt;</pre>
+    The UUID is the exact Claude/Codex session id, so the <em>same conversation</em> resumes — not a fresh agent.</li>
+  <li>Two <span class="k">LaunchAgents</span> arm it: an interval snapshotter and a login-triggered restore.</li>
+</ol>
+
+<h2>Why snapshot-first (subtle but load-bearing)</h2>
+<p>When an agent exits <em>cleanly</em>, herdr immediately scrubs its <code>agent_session</code> from <code>session.json</code>. On a real power-off the agents are SIGKILLed, so <code>session.json</code> keeps the binding — but the 5-min snapshot, captured while the agent was alive, is the robust record either way. Restore unions both sources so nothing is missed.</p>
+
+<h2>Safety / idempotency</h2>
+<ul>
+  <li>Restore <strong>only ever injects into a bare shell</strong> (a pane where <code>agent</code> and <code>agent_session</code> are both null). A pane that already has an agent is skipped — so a second run, or a run on an already-populated session, is a no-op.</li>
+  <li>It never closes, splits, or creates panes, and never sends input to a pane that already has an agent. Purely additive.</li>
+  <li>The login wrapper waits for the herdr socket, gives herdr time to finish its native layout restore, then guards: if zero desired-agent panes are bare, it skips entirely.</li>
+</ul>
+
+<h2>Files</h2>
+<table>
+<tr><th>Path</th><th>Role</th></tr>
+<tr><td><code>tools/herdr-resurrect/herdr-snapshot.mjs</code></td><td>snapshotter (symlinked to <code>~/.local/bin/herdr-snapshot</code>)</td></tr>
+<tr><td><code>tools/herdr-resurrect/herdr-restore.mjs</code></td><td>restore engine (symlinked to <code>~/.local/bin/herdr-restore</code>). Flags: <code>--dry-run</code>, <code>--from-snapshot</code>, <code>--verbose</code></td></tr>
+<tr><td><code>tools/herdr-resurrect/herdr-snapshot.sh</code></td><td>launchd wrapper for the snapshotter</td></tr>
+<tr><td><code>tools/herdr-resurrect/herdr-restore-on-login.sh</code></td><td>login wrapper: socket-wait + guard + restore</td></tr>
+<tr><td><code>~/Library/LaunchAgents/com.siso.herdr-resurrect-snapshot.plist</code></td><td>every 300s + RunAtLoad</td></tr>
+<tr><td><code>~/Library/LaunchAgents/com.siso.herdr-resurrect-restore.plist</code></td><td>RunAtLoad (once per login)</td></tr>
+<tr><td><code>~/.local/state/herdr-resurrect/</code></td><td>snapshots + <code>latest.json</code></td></tr>
+<tr><td><code>/tmp/herdr-resurrect.log</code>, <code>/tmp/herdr-resurrect-snapshot.log</code></td><td>logs</td></tr>
+</table>
+
+<h2>Eyeball readiness (one command)</h2>
+<pre>node ~/.local/bin/herdr-restore --dry-run --verbose</pre>
+<p>Prints, per persisted agent pane, whether it would RESTORE (bare shell found) or SKIP (agent already alive) — with the exact resume command. On a normal running session every line is SKIP; right after a reboot each would show RESTORE.</p>
+
+<h2>Manual controls</h2>
+<pre># take a snapshot now
+herdr-snapshot
+
+# see what restore WOULD do (safe, no changes)
+herdr-restore --dry-run
+
+# force a restore now (only touches bare shells)
+herdr-restore
+
+# restore purely from the last snapshot (ignore live session.json)
+herdr-restore --from-snapshot
+
+# check the LaunchAgents are armed
+launchctl list | grep herdr-resurrect</pre>
+
+<h2>Verification record</h2>
+<ul>
+  <li>Snapshot fidelity: 12/12 live panes captured, all 11 detectable agent-bound sessions with resumable UUIDs.</li>
+  <li>End-to-end (disposable <code>RESURRECT-TEST</code> workspace): launched a real claude agent → herdr bound session <code>5ae0a24d…</code> → snapshotted → killed the agent to a bare shell (simulating post-reboot) → restore fired <code>claude --resume 5ae0a24d…</code> → agent returned <strong>with the same session UUID</strong>. All 11 of Shaan's live panes left untouched. Test workspace cleaned up. <strong>PASS.</strong></li>
+  <li>launchd load: both agents loaded; RunAtLoad restore correctly guarded and skipped (0 bare panes) without disturbing any live agent.</li>
+  <li>Remaining unverifiable until a real reboot: that macOS spawns the login restore LaunchAgent <em>after</em> herdr's own session restore has produced bare shells (timing). The wrapper's socket-wait + 8s settle + guard is built for this, and re-running restore is a safe no-op if it fires early.</li>
+</ul>
+</body>
+</html>

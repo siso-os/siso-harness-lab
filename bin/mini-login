@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""mini-login claude-siso [claude-siso-3] — start Claude's sign-in on the Mac mini and give Shaan one page to finish it.
+
+The mini has no Claude login (checked 2 Oct: `claude auth status` loggedIn false), and OAuth refresh tokens rotate, so the
+laptop's login must not be copied there. Each account is signed in once on the mini and it needs his browser: this opens
+one herdr tab per account (running `claude auth login` over ssh), reads the sign-in URL the CLI prints, and posts ONE console
+page with a button per account. He clicks it, signs in as the account named, and pastes the code the page shows into that
+tab ("Paste code here"). `mini-sync check` then reports the account logged in. No token passes through this script.
+Plain claude is Fahmy's login and is refused. Exit 0 page posted, 2 usage, 1 a sign-in URL never appeared.
+
+  mini-login --code claude-siso|claude-siso-3 CODE     type the code Shaan was shown into that account's waiting tab
+(for when he would rather say it than find the tab; the code is single-use and tied to the waiting sign-in). Exit 0 sent and
+the tab no longer waits, 1 no waiting tab for that account, 3 sent but the tab still waits (code rejected).
+On the mini the login is stored in the config dir's .credentials.json when the Keychain is locked, as it is over ssh
+("User interaction is not allowed", checked 2 Oct): Claude Code falls back to that file, so nothing else is needed.
+"""
+import json, os, re, subprocess, sys, time
+
+# Which address signs in to each config dir lives outside git: ~/.config/siso/claude-logins.json
+# ({"claude-siso": "...", "claude-siso-3": "..."}; SISO_CLAUDE_LOGINS points elsewhere).
+def _logins():
+    try: return json.load(open(os.path.expanduser(os.environ.get("SISO_CLAUDE_LOGINS") or "~/.config/siso/claude-logins.json")))
+    except (OSError, ValueError): return {}
+_EMAIL = _logins()
+ACCOUNTS = {"claude-siso": ("~/.claude-siso", _EMAIL.get("claude-siso", "claude-siso")),
+            "claude-siso-3": ("~/.config/claude-siso-3", _EMAIL.get("claude-siso-3", "claude-siso-3"))}
+HERDR = os.environ.get("HERDR_BIN", "herdr")
+WS = os.environ.get("HERDR_LOGIN_WS", "w7")
+
+
+def sh(*a, **k):
+    return subprocess.run(a, capture_output=True, text=True, **k)
+
+
+def start(login):
+    cfg, email = ACCOUNTS[login]
+    remote = (f"export PATH=$HOME/.local/bin:/opt/homebrew/bin:$PATH; CLAUDE_CONFIG_DIR={cfg} "
+              f"claude auth login --claudeai" + (f" --email {email}" if "@" in email else ""))
+    r = json.loads(sh(HERDR, "tab", "create", "--workspace", WS, "--cwd", os.path.expanduser("~"), "--label", f"SIGN IN {email} on the mini", "--no-focus").stdout)["result"]
+    tab, pane = r["tab"]["tab_id"], r["root_pane"]["pane_id"]
+    time.sleep(1)
+    sh(HERDR, "pane", "run", pane, f"ssh -t -o RemoteCommand=none mac-mini '{remote}'")
+    url = None
+    for _ in range(30):
+        time.sleep(1)
+        text = sh(HERDR, "pane", "read", pane).stdout
+        m = re.search(r"(https://claude\.com/cai/oauth/authorize\S*(?:\n\S+)*?)\s*\n\s*Paste code", text)
+        if m:
+            url = re.sub(r"\s+", "", m[1])
+            break
+    return {"login": login, "email": email, "tab": tab, "pane": pane, "url": url}
+
+
+def send_code(login, code):
+    email = ACCOUNTS[login][1]
+    tabs = json.loads(sh(HERDR, "tab", "list").stdout)["result"]["tabs"]
+    tab = next((t for t in tabs if t.get("label") == f"SIGN IN {email} on the mini"), None)
+    if not tab:
+        print(f"mini-login: no waiting tab for {email}; run mini-login {login}", file=sys.stderr)
+        return 1
+    pane = json.loads(sh(HERDR, "pane", "list").stdout)["result"]["panes"]
+    pane = next((p["pane_id"] for p in pane if p["tab_id"] == tab["tab_id"]), None)
+    if not pane or "Paste code here" not in sh(HERDR, "pane", "read", pane).stdout:
+        print(f"mini-login: the {email} tab is not waiting for a code; run mini-login {login}", file=sys.stderr)
+        return 1
+    sh(HERDR, "pane", "send-text", pane, code.strip())
+    sh(HERDR, "pane", "send-keys", pane, "enter")
+    for _ in range(20):
+        time.sleep(1)
+        out = sh(HERDR, "pane", "read", pane).stdout
+        if "Paste code here" not in out.split("Paste code here")[-1] and re.search(r"(?i)logged in|login successful|success", out):
+            print(f"{email}: signed in (tab {tab['tab_id']})")
+            return 0
+        if re.search(r"(?i)invalid|expired|failed", out.split("Paste code here")[-1]):
+            break
+    print(f"mini-login: sent, but the tab did not report success: {out.strip()[-160:]}", file=sys.stderr)
+    return 3
+
+
+def main(argv):
+    if argv[:1] == ["--code"]:
+        if len(argv) != 3 or argv[1] not in ACCOUNTS:
+            print("usage: mini-login --code claude-siso|claude-siso-3 CODE", file=sys.stderr)
+            return 2
+        return send_code(argv[1], argv[2])
+    logins = argv or ["claude-siso"]
+    if not all(l in ACCOUNTS for l in logins):
+        print("usage: mini-login claude-siso [claude-siso-3]   (plain claude is Fahmy's login and never goes on the mini)", file=sys.stderr)
+        return 2
+    got = [start(l) for l in logins]
+    if not all(g["url"] for g in got):
+        print("mini-login: no sign-in URL appeared for " + ", ".join(g["login"] for g in got if not g["url"]), file=sys.stderr)
+        return 1
+    rows = "".join(f'<li><p><b>{g["email"]}</b> ({g["login"]})</p><p><a class="btn" href="{g["url"]}" target="_blank">1. Sign in as {g["email"]}</a></p>'
+                   f'<p>2. Copy the code the page shows, then paste it into the herdr tab <b>SIGN IN {g["email"]} on the mini</b> '
+                   f'(it says "Paste code here") and press Enter.</p></li>' for g in got)
+    page = f"""<!doctype html><meta charset=utf-8><title>Sign the Mac mini in</title><body style="font:17px system-ui;max-width:640px;margin:40px auto;padding:0 16px">
+<h2>Sign the Mac mini in to Claude</h2><p>The mini has no Claude login yet. About 2 minutes per account. Each link works only while its herdr tab stays open.</p>
+<style>.btn{{display:inline-block;background:#d97757;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none}}</style><ol>{rows}</ol>
+<p>When both are done the check passes by itself: <code>mini-sync check</code>.</p>"""
+    out = sh("console-post", "-k", "html", "-t", "Sign the Mac mini in to Claude", "-", input=page)
+    print("\n".join(f"tab {g['tab']} (pane {g['pane']}): {g['email']}" for g in got))
+    print((out.stdout + out.stderr).strip()[-300:])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""dev-lease — hand a shared resource (DEV box, a VPS, a port) over as state, not chat messages.
+
+STACK-OPT, 2 Oct 2026: agents handed DEV over with prose ("DEV free for X until 13:23") and one sat idle waiting for
+words that never came. A wake costs a step at full context; a lease costs nothing until it changes.
+
+  dev-lease take RES --holder NAME --until HH:MM|+30m|+2h --why "..."   exit 0 taken/renewed, 1 held by someone else
+  dev-lease release RES --holder NAME [--force]                         exit 0 released, 1 not yours
+  dev-lease status [RES] [--json]                                       one line per lease (free/held/expired)
+  dev-lease wait RES [--timeout SECONDS] [--holder NAME]                exits 0 when RES is free (or expired, or
+                                                                        already NAME's), 124 on timeout
+
+Waiting: run `dev-lease wait DEV --holder ME` with run_in_background (or under Monitor); the completion notice is
+the wake, so the wait costs one step, not one per check. Then `dev-lease take DEV --holder ME ...`.
+State: one JSON file per resource under ~/.local/state/dev-lease/ (DEV_LEASE_DIR), written atomically under a
+lock; history in log.jsonl there. Local only: every agent runs on this laptop.
+"""
+import argparse, datetime as dt, fcntl, json, os, re, sys, time
+
+DIR = os.environ.get("DEV_LEASE_DIR") or os.path.expanduser("~/.local/state/dev-lease")
+
+
+def now():
+    return dt.datetime.now().astimezone()
+
+
+def parse_until(s, ref):
+    m = re.fullmatch(r"\+(\d+)([mh])", s)
+    if m:
+        return ref + dt.timedelta(minutes=int(m[1]) * (60 if m[2] == "h" else 1))
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", s)
+    if not m:
+        raise SystemExit(f"dev-lease: --until wants HH:MM, +30m or +2h, got {s!r}")
+    t = ref.replace(hour=int(m[1]), minute=int(m[2]), second=0, microsecond=0)
+    return t if t > ref else t + dt.timedelta(days=1)
+
+
+def safe(res):
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", res):
+        raise SystemExit(f"dev-lease: resource names are letters, digits, . _ - (got {res!r})")
+    return res
+
+
+def path(res):
+    return os.path.join(DIR, safe(res) + ".json")
+
+
+def read(res):
+    try:
+        with open(path(res)) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def live(lease, ref):
+    return bool(lease) and dt.datetime.fromisoformat(lease["until"]) > ref
+
+
+class Lock:
+    def __init__(self, res):
+        os.makedirs(DIR, exist_ok=True)
+        self.f = open(os.path.join(DIR, safe(res) + ".lock"), "w")
+
+    def __enter__(self):
+        fcntl.flock(self.f, fcntl.LOCK_EX)
+
+    def __exit__(self, *a):
+        fcntl.flock(self.f, fcntl.LOCK_UN)
+        self.f.close()
+
+
+def write(res, lease):
+    tmp = f"{path(res)}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(lease, f)
+    os.replace(tmp, path(res))
+
+
+def log(event, res, **kw):
+    with open(os.path.join(DIR, "log.jsonl"), "a") as f:
+        f.write(json.dumps({"ts": now().isoformat(timespec="seconds"), "event": event, "res": res, **kw}) + "\n")
+
+
+def describe(res, lease, ref):
+    if not lease:
+        return f"{res}: free"
+    until = dt.datetime.fromisoformat(lease["until"])
+    state = "held" if until > ref else "expired"
+    return f"{res}: {state} by {lease['holder']} until {until:%H:%M} — {lease.get('why', '')}"
+
+
+def take(a):
+    ref = now()
+    until = parse_until(a.until, ref)
+    with Lock(a.res):
+        cur = read(a.res)
+        if live(cur, ref) and cur["holder"] != a.holder:
+            print(describe(a.res, cur, ref), file=sys.stderr)
+            return 1
+        lease = {"res": a.res, "holder": a.holder, "until": until.isoformat(timespec="seconds"), "why": a.why,
+                 "since": (cur or {}).get("since") if live(cur, ref) else ref.isoformat(timespec="seconds")}
+        write(a.res, lease)
+        log("renew" if live(cur, ref) else "take", a.res, holder=a.holder, until=lease["until"], why=a.why)
+    print(describe(a.res, lease, ref))
+    return 0
+
+
+def release(a):
+    ref = now()
+    with Lock(a.res):
+        cur = read(a.res)
+        if live(cur, ref) and cur["holder"] != a.holder and not a.force:
+            print(describe(a.res, cur, ref), file=sys.stderr)
+            return 1
+        try:
+            os.unlink(path(a.res))
+        except FileNotFoundError:
+            pass
+        log("release", a.res, holder=a.holder, forced=bool(a.force and cur and cur["holder"] != a.holder))
+    print(f"{a.res}: free")
+    return 0
+
+
+def status(a):
+    ref = now()
+    names = [a.res] if a.res else sorted(f[:-5] for f in os.listdir(DIR) if f.endswith(".json")) if os.path.isdir(DIR) else []
+    rows = [(n, read(n)) for n in names]
+    if a.json:
+        print(json.dumps([{"res": n, "state": "free" if not l else "held" if live(l, ref) else "expired", **(l or {})}
+                          for n, l in rows]))
+    else:
+        print("\n".join(describe(n, l, ref) for n, l in rows) or "no leases")
+    return 0
+
+
+def wait(a):
+    deadline = time.monotonic() + a.timeout if a.timeout else None
+    while True:
+        ref = now()
+        cur = read(a.res)
+        if not live(cur, ref) or (a.holder and cur["holder"] == a.holder):
+            print(describe(a.res, cur, ref))
+            return 0
+        if deadline and time.monotonic() >= deadline:
+            print(describe(a.res, cur, ref), file=sys.stderr)
+            return 124
+        time.sleep(float(os.environ.get("DEV_LEASE_POLL", "2")))
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="dev-lease", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    t = sub.add_parser("take"); t.add_argument("res"); t.add_argument("--holder", required=True)
+    t.add_argument("--until", required=True); t.add_argument("--why", required=True); t.set_defaults(fn=take)
+    r = sub.add_parser("release"); r.add_argument("res"); r.add_argument("--holder", required=True)
+    r.add_argument("--force", action="store_true"); r.set_defaults(fn=release)
+    s = sub.add_parser("status"); s.add_argument("res", nargs="?"); s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=status)
+    w = sub.add_parser("wait"); w.add_argument("res"); w.add_argument("--timeout", type=float, default=0)
+    w.add_argument("--holder"); w.set_defaults(fn=wait)
+    a = p.parse_args(argv)
+    return a.fn(a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

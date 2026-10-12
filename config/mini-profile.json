@@ -1,0 +1,30 @@
+{
+  "_why": "What the Mac mini gets of the laptop's Claude setup (so-033). Hooks that need a laptop-only service are dropped: the console (:8891, Shaan's screen), tokentracker, and the two *-axi session-start reporters (not installed on the mini).",
+  "drop_hook_substrings": [
+    "console/bin/",
+    "/.tokentracker/",
+    "gh-axi",
+    "chrome-devtools-axi"
+  ],
+  "drop_settings_keys": [
+    "enabledPlugins",
+    "extraKnownMarketplaces"
+  ],
+  "copy_dirs": [
+    "hooks",
+    "hud",
+    "skills",
+    "agents",
+    "commands",
+    "lessons"
+  ],
+  "login3_links": [
+    "agents",
+    "CLAUDE.md",
+    "commands",
+    "hooks",
+    "lessons",
+    "settings.json",
+    "skills"
+  ]
+}

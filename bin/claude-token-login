@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""claude-token-login ACCOUNT — one long-lived Claude token for a SISO account, straight into the Keychain, never shown.
+
+Shaan (2 Oct, via A0): "i don't understand ... can you run it what do you mean per account". So this is the whole flow: it
+opens its own herdr tab, runs `claude setup-token` there with the page in a private Chrome window (bin/open-private-url), so
+he signs in as the right account from nothing, clicks Authorize, and pastes the code into the tab if the page shows one. The token it prints is masked on screen
+and saved to the Keychain item siso-claude-oauth/<ACCOUNT> through `security -i` (never in argv, a file or a log). Then
+scripts/token-proof.py checks it (native-agents step 4).
+
+  claude-token-login ACCOUNT          open a herdr tab "SIGN IN <ACCOUNT>" in the A0 workspace and run there; prints the tab
+  claude-token-login --here ACCOUNT   run in this terminal
+ACCOUNT: fuzeheritage (claude-siso) | lordsisodia (claude-siso-3). Plain claude (Fahmy's) is refused.
+Exit 0 token saved (and the proof's verdict shown), 1 no token came out (nothing saved), 2 usage.
+"""
+import datetime as dt, fcntl, json, os, pty, re, select, shutil, struct, subprocess, sys, tempfile, termios, tty
+
+# Which address signs in to each config dir lives outside git: ~/.config/siso/claude-logins.json
+# ({"claude-siso": "...", "claude-siso-3": "..."}; SISO_CLAUDE_LOGINS points elsewhere).
+def _logins():
+    try: return json.load(open(os.path.expanduser(os.environ.get("SISO_CLAUDE_LOGINS") or "~/.config/siso/claude-logins.json")))
+    except (OSError, ValueError): return {}
+_EMAIL = _logins()
+ACCOUNTS = {"fuzeheritage": f"{_EMAIL.get('claude-siso', 'the fuzeheritage account')} (the claude-siso login)",
+            "lordsisodia": f"{_EMAIL.get('claude-siso-3', 'the lordsisodia account')} (the claude-siso-3 login)"}
+SERVICE = "siso-claude-oauth"
+CLAUDE = os.environ.get("CLAUDE_TOKEN_LOGIN_CLAUDE") or os.path.expanduser("~/.local/bin/claude")
+PROOF = os.environ.get("CLAUDE_TOKEN_LOGIN_PROOF") or os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "scripts", "token-proof.py")
+STATE = os.path.expanduser(os.environ.get("CLAUDE_TOKEN_LOGIN_STATE") or "~/.local/state/claude-token-login")
+TOKEN = re.compile(rb"sk-ant-oat[0-9A-Za-z_\-]{20,}")
+MARK = b"sk-ant-"
+
+
+def in_tab(account):
+    ws = json.loads(subprocess.run(["herdr", "workspace", "list"], capture_output=True, text=True).stdout)["result"]["workspaces"]
+    w = next((x["workspace_id"] for x in ws if x.get("label") == "A0"), ws[0]["workspace_id"])
+    t = json.loads(subprocess.run(["herdr", "tab", "create", "--workspace", w, "--cwd", os.path.expanduser("~"), "--label",
+                                   f"SIGN IN {account}", "--no-focus"], capture_output=True, text=True).stdout)["result"]
+    pane = t["root_pane"]["pane_id"]
+    subprocess.run(["herdr", "pane", "run", pane, f"{os.path.realpath(__file__)} --here {account}"], capture_output=True)
+    print(f"tab 'SIGN IN {account}' (pane {pane}): a private Chrome window opens; Shaan signs in there as {ACCOUNTS[account]} and clicks Authorize")
+    return 0
+
+
+class Masker:
+    """Pass output through, but never a token: hold back anything that could be the start of one until it is complete."""
+
+    def __init__(self, out):
+        self.out, self.buf, self.found = out, b"", []
+
+    def _emit(self, data):
+        for m in TOKEN.finditer(data):
+            self.found.append(m.group().decode())
+        self.out(TOKEN.sub(b"sk-ant-oat... [saved to the Keychain, hidden]", data))
+
+    def feed(self, chunk, final=False):
+        self.buf += chunk
+        if final:
+            self._emit(self.buf); self.buf = b""; return
+        cut = self.buf.rfind(MARK)
+        if cut == -1 or len(self.buf) - cut > 400:  # no token start pending, or a complete one long ago
+            cut = max(0, len(self.buf) - (len(MARK) - 1))
+        # never cut inside a complete token: move the cut to the end of any match it falls in
+        for m in TOKEN.finditer(self.buf):
+            if m.start() < cut < m.end():
+                cut = m.end()
+        if cut > 0:
+            self._emit(self.buf[:cut]); self.buf = self.buf[cut:]
+
+
+def run_setup_token(home):
+    out = lambda b: (os.write(1, b), None)
+    mk = Masker(out)
+    pid, fd = pty.fork()
+    if pid == 0:
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC_", "CLAUDE_CODE_OAUTH"))}
+        env["CLAUDE_CONFIG_DIR"] = home
+        env["BROWSER"] = os.environ.get("CLAUDE_TOKEN_LOGIN_BROWSER") or os.path.join(os.path.dirname(os.path.realpath(__file__)), "open-private-url")
+        os.execve(CLAUDE, [CLAUDE, "setup-token"], env)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 400, 0, 0))  # wide: the token prints on one line
+    tty_in = os.isatty(0)
+    old = termios.tcgetattr(0) if tty_in else None
+    if tty_in:
+        tty.setraw(0)
+    try:
+        fds = [fd, 0]
+        while True:
+            r, _, _ = select.select(fds, [], [], 1)
+            if fd in r:
+                try:
+                    data = os.read(fd, 4096)
+                except OSError:
+                    data = b""
+                if not data:
+                    break
+                mk.feed(data)
+            if 0 in r:
+                data = os.read(0, 1024)
+                if data:
+                    os.write(fd, data)
+                else:
+                    fds = [fd]
+    finally:
+        if tty_in:
+            termios.tcsetattr(0, termios.TCSADRAIN, old)
+        mk.feed(b"", final=True)
+        os.waitpid(pid, 0)
+    return mk.found[-1] if mk.found else None
+
+
+def store(account, token):
+    r = subprocess.run(["security", "-i"], input=f"add-generic-password -U -s {SERVICE} -a {account} -w {token}\n",
+                       capture_output=True, text=True, timeout=20)
+    back = subprocess.run(["security", "find-generic-password", "-s", SERVICE, "-a", account, "-w"], capture_output=True, text=True)
+    return r.returncode == 0 and back.stdout.strip() == token
+
+
+def log(row):
+    os.makedirs(STATE, exist_ok=True)
+    with open(os.path.join(STATE, "log.jsonl"), "a") as f:
+        f.write(json.dumps({"at": dt.datetime.now().astimezone().isoformat(timespec="seconds"), **row}) + "\n")
+
+
+def main(argv):
+    here = "--here" in argv
+    rest = [a for a in argv if a != "--here"]
+    if len(rest) != 1 or rest[0] in ("-h", "--help"):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    account = rest[0]
+    if account not in ACCOUNTS:
+        print(f"claude-token-login: {account!r} refused; one of {', '.join(ACCOUNTS)} (plain claude is Fahmy's)", file=sys.stderr)
+        return 2
+    if not here:
+        return in_tab(account)
+    print(f"\n  SIGN IN {account}\n  1. A private Chrome window opens on claude.ai. Sign in there as {ACCOUNTS[account]}, then click Authorize.\n"
+          f"  2. If the page shows a code, copy it, paste it here and press Enter.\n  That's all: the token is saved for you and never shown.\n")
+    home = tempfile.mkdtemp(prefix=".siso-ephemeral-token-login.")
+    try:
+        token = run_setup_token(home)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    if not token:
+        log({"account": account, "stored": False})
+        print("\n  No token came out, so nothing was saved. Run it again when ready.")
+        return 1
+    ok = store(account, token)
+    log({"account": account, "stored": ok})
+    if not ok:
+        print("\n  The token could not be saved to the Keychain (nothing else was written).")
+        return 1
+    print(f"\n  Saved for {account}. Checking it now (one short Opus call) ...\n")
+    proof = subprocess.run([PROOF, account], capture_output=True, text=True)
+    print("\n".join("  " + l for l in (proof.stdout + proof.stderr).strip().splitlines()))
+    log({"account": account, "proof": proof.returncode})
+    if proof.returncode == 4:  # the browser authorised another account: never keep a token under the wrong name
+        other = (proof.stdout.split("wrong-account:", 1)[1].split()[0] if "wrong-account:" in proof.stdout else "another account")
+        subprocess.run(["security", "delete-generic-password", "-s", SERVICE, "-a", account], capture_output=True)
+        log({"account": account, "deleted": "wrong account", "was": other})
+        print(f"\n  That browser was signed in to {other}, not {account}, so the token was thrown away.\n"
+              f"  Sign the browser in to {ACCOUNTS[account]} (or open the link in a private window signed in to it), then run:\n"
+              f"    claude-token-login --here {account}")
+        return 1
+    print("\n  Done. You can close this tab.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

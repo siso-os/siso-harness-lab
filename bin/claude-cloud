@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""claude-cloud — run sub-agent-heavy and runner work as a Claude Code cloud session, paid from the login's dollar grant.
+
+Shaan, 2 Oct (via A0, ab-107/so-022): "Cloud credits would be great ... it's like free" and he's "way more open to splash
+some sub-agents". The grant is the $250 on fuzeheritage (claude-siso; `claude-credits` shows it, ends 2026-11-05). A
+cloud session (`claude --cloud`) runs in Anthropic's cloud on a clone of this repo's GitHub remote and draws from that
+grant, not from the laptop's 5-hour window (probe 2 Oct 16:15: one tiny session took $0.11 of it). No API key exists
+in the vault and none is needed. Plain `claude` (Fahmy's login) is refused.
+
+  claude-cloud [--task ID] [--alloc usd:N] [--chain C] [--login claude-siso] BRIEF_FILE|-|"brief"   start one
+  claude-cloud send SESSION_ID "message"                                                            message one
+  claude-cloud list [--json]                                                                        sessions started here
+  claude-cloud status [--json] [SESSION_ID]                    each session's state, cost, GitHub access, what it waits on
+  claude-cloud recover SESSION_ID --ask                        ask a session that can't push to emit its commits as a patch
+  claude-cloud recover SESSION_ID [--branch NAME]              read that patch back (sessions API) and put the commits on a
+                                                               local branch in a worktree (_data/worktrees/<repo>/cloud-<task>)
+
+Run it from inside a repo whose origin is on GitHub. The session is created through the sessions API with that repo as its
+source (so it can push its branch), then the brief is sent as its first message; if that fails it falls back to
+`claude --cloud`, whose bundle sessions cannot push (claude-cloud recover gets their work back). The brief gets "TASK:"/"CHAIN:" lines and a
+contract: work on a new branch, push it, use sub-agents freely for parallel reading and checking, finish with a RETURN
+block. Each start is a siso-task mark (source cloud) and a row in ~/.local/state/claude-cloud/log.jsonl, so
+bin/spend-ledger charges the grant's daily spend to the tasks that ran on it. Exit 0 started/sent, 1 failed, 2 refused.
+"""
+import base64, datetime as dt, gzip, importlib.machinery, importlib.util, json, os, re, subprocess, sys, urllib.error, urllib.request
+
+HERE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+STATE = os.environ.get("CLAUDE_CLOUD_STATE") or os.path.expanduser("~/.local/state/claude-cloud")
+CLAUDE = os.environ.get("CLAUDE_BIN") or os.path.expanduser("~/.local/bin/claude")
+LOGINS = {"claude-siso": "~/.claude-siso", "claude-siso-3": "~/.config/claude-siso-3"}  # never plain claude (Fahmy's)
+API = os.environ.get("CLAUDE_CLOUD_API") or "https://api.anthropic.com"
+CONTRACT = """
+
+---
+You are a cloud worker for an owner on Shaan's laptop. Work on a new branch named cloud/<task or topic>, never on main.
+FIRST, before any work: `git push --dry-run origin HEAD:refs/heads/cloud/<task>`. If that fails you cannot push (3 Oct: five
+sessions finished their work and sat idle because their GitHub token was invalid); keep working, commit locally, and end with
+STATUS: blocked - cannot push, so the owner collects it with `claude-cloud recover`. Push the branch after EVERY commit, not
+only at the end; never merge. This session runs on prepaid cloud credits: use sub-agents freely
+for parallel reading, searching and checking, but change only what the brief names. Prove each claim with what you
+observed (commands, exit codes, test counts). Your final message, ALWAYS, also when you fail or stop early, is ONLY this
+block, at most 200 words:
+
+RETURN
+STATUS: done | failed | blocked — <one line>
+BRANCH: <pushed branch, or none>
+CHANGED: <files, or "nothing">
+VERIFY: <checks run and their results>"""
+
+
+def load(name, file):
+    loader = importlib.machinery.SourceFileLoader(name, os.path.join(HERE, file))
+    m = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
+    loader.exec_module(m)
+    return m
+
+
+def opt(argv, k, d=None):
+    if k in argv:
+        i = argv.index(k)
+        v = argv[i + 1] if i + 1 < len(argv) else d
+        del argv[i:i + 2]
+        return v
+    return d
+
+
+def env_for(login):
+    return {**os.environ, "CLAUDE_CONFIG_DIR": os.path.expanduser(LOGINS[login])}
+
+
+def start(argv):
+    st = load("siso_task", "bin/siso-task")
+    task, alloc, chain = opt(argv, "--task", os.environ.get("SISO_TASK")), opt(argv, "--alloc", os.environ.get("SISO_ALLOC")), opt(argv, "--chain", os.environ.get("SISO_CHAIN"))
+    login = opt(argv, "--login", "claude-siso")
+    if login not in LOGINS:
+        print(f"claude-cloud: login {login!r} refused; use one of {', '.join(LOGINS)} (plain claude is Fahmy's)", file=sys.stderr)
+        return 2
+    if len(argv) != 1:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    try:
+        al, ch = st.parse_alloc(alloc), st.parse_chain(chain)
+    except ValueError as e:
+        print(f"claude-cloud: {e}", file=sys.stderr)
+        return 2
+    origin = subprocess.run(["git", "remote", "get-url", "origin"], capture_output=True, text=True).stdout.strip()
+    if "github.com" not in origin:
+        print("claude-cloud: run it inside a repo whose origin is on GitHub (the cloud session clones it)", file=sys.stderr)
+        return 2
+    src = argv[0]
+    brief = sys.stdin.read() if src == "-" else open(src).read() if os.path.isfile(src) else src
+    head = (f"TASK: {task}\n" if task else "") + (f"CHAIN: {','.join(ch)}\n" if ch else "")
+    text = (head + "\n" if head else "") + brief + CONTRACT
+    cc = None if os.environ.get("CLAUDE_CLOUD_NO_SAMPLE") else load("claude_credits", "bin/claude-credits")
+    if cc:  # a sample just before, so the ledger can see what this session adds
+        try:
+            cc.sample(cc.read_all())
+        except Exception:
+            pass
+    sid, url, mode = None, None, "api"
+    if os.environ.get("CLAUDE_CLOUD_CREATE", "api") == "api":
+        sid, why = create_with_repo(login, origin, task, (brief.strip().splitlines() or ["cloud task"])[0][:80])
+        if sid:
+            url = f"https://claude.ai/code/{sid}"
+            r = subprocess.run([CLAUDE, "-p", text, "--cloud", sid], env=env_for(login), capture_output=True, text=True,
+                               stdin=subprocess.DEVNULL, timeout=180)
+            if r.returncode != 0:
+                print(f"claude-cloud: session {sid} made but the brief was not delivered: {(r.stdout + r.stderr).strip()[-300:]}", file=sys.stderr)
+                return 1
+        else:
+            print(f"claude-cloud: API create failed ({why}); falling back to `claude --cloud` (a bundle: that session CANNOT push)", file=sys.stderr)
+    if not sid:
+        mode = "bundle"
+        # A new cloud session needs a terminal ("--cloud requires an interactive terminal"): script(1) gives it a pty.
+        r = subprocess.run(["script", "-q", "/dev/null", CLAUDE, "--cloud", text], env=env_for(login), capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=180)
+        out = r.stdout + r.stderr
+        m = re.search(r"(session_[A-Za-z0-9]+)", out)
+        if r.returncode != 0 or not m:
+            print(f"claude-cloud: no session started (exit {r.returncode}): {out.strip()[-400:]}", file=sys.stderr)
+            return 1
+        sid = m[1]
+        url = (re.search(r"(https://claude\.ai/code/\S+)", out) or [None, None])[1]
+    now = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+    if task:
+        st.mark(sid, task, al, "cloud", at=now, chain=ch)
+    os.makedirs(os.path.join(STATE, "briefs"), exist_ok=True)
+    bf = os.path.join(STATE, "briefs", f"{sid}.md")  # the full brief, so a dead session can be restarted as it was
+    open(bf, "w").write(text)
+    row = {"at": now, "session": sid, "url": url, "login": login, "task": task, "alloc": al, "chain": ch, "dir": os.getcwd(), "origin": origin,
+           "brief": bf, "mode": mode}
+    with open(os.path.join(STATE, "log.jsonl"), "a") as f:
+        f.write(json.dumps(row) + "\n")
+    print(f"cloud session {sid} on {login}" + (f" for {task}" if task else ""))
+    print(f"View: {url}" if url else "")
+    print(f"Message it: claude-cloud send {sid} \"...\"   Take it local: CLAUDE_CONFIG_DIR={LOGINS[login]} claude --teleport {sid}")
+    return 0
+
+
+def sessions():
+    try:
+        return [json.loads(l) for l in open(os.path.join(STATE, "log.jsonl")) if l.strip()]
+    except OSError:
+        return []
+
+
+def send(argv):
+    if len(argv) != 3:
+        print("usage: claude-cloud send SESSION_ID \"message\"", file=sys.stderr)
+        return 2
+    sid, msg = argv[1], argv[2]
+    login = next((s["login"] for s in sessions() if s["session"] == sid), "claude-siso")
+    r = subprocess.run([CLAUDE, "-p", msg, "--cloud", sid], env=env_for(login), capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=180)
+    print((r.stdout + r.stderr).strip())
+    return 0 if r.returncode == 0 else 1
+
+
+def create_with_repo(login, origin, task, title):
+    """Create the session through the sessions API with the GitHub repo as its source, so its git proxy lets it push.
+    3 Oct: `claude --cloud` uploads a bundle (tengu_ccr_bundle_seed_enabled) and attaches no source, so the proxy refused
+    every push ("this repo isn't in the session's sources"); a session made this way pushed cloud/gh-probe-4 (1a21a7a).
+    Returns (session id, None) or (None, why)."""
+    m = re.search(r"github\.com[:/]([^/]+)/([^/.]+?)(?:\.git)?/?$", origin)
+    if not m:
+        return None, "origin is not a github.com repo"
+    repo = f"{m[1]}/{m[2]}"
+    env = os.environ.get("CLAUDE_CLOUD_ENV")
+    if not env:  # the environment the account's last session ran in
+        for s in reversed(sessions()):
+            try:
+                env = api(s["login"], f"/v1/sessions/{s['session']}?beta=true").get("environment_id")
+            except RuntimeError:
+                continue
+            if env:
+                break
+    if not env:
+        return None, "no cloud environment known (set CLAUDE_CLOUD_ENV)"
+    import uuid
+    body = {"title": title, "environment_id": env,
+            "events": [{"type": "event", "data": {"type": "control_request", "request_id": f"set-mode-{uuid.uuid4()}",
+                                                   "request": {"subtype": "set_permission_mode", "mode": "bypassPermissions"}}}],
+            "session_context": {"sources": [{"type": "git_repository", "url": f"https://github.com/{repo}", "revision": "main"}],
+                                "outcomes": [{"type": "git_repository", "git_info": {"type": "github", "repo": repo,
+                                                                                     "branches": [f"cloud/{task}"] if task else []}}],
+                                "model": os.environ.get("CLAUDE_CLOUD_MODEL", "claude-opus-5-5[1m]"), "cwd": "", "reuse_outcome_branches": True}}
+    try:
+        d = api(login, "/v1/sessions?beta=true", body)
+    except RuntimeError as e:
+        return None, str(e)
+    return (d.get("id"), None) if d.get("id") else (None, f"no id in reply: {json.dumps(d)[:200]}")
+
+
+def api(login, path, body=None):
+    """GET a Claude Code sessions API path as the login (its own OAuth token from the Keychain, never printed)."""
+    cc = load("claude_credits", "bin/claude-credits")
+    tok = os.environ.get("CLAUDE_CLOUD_TOKEN") or cc.token(LOGINS[login])
+    if not tok:
+        raise RuntimeError(f"no token for {login}")
+    h = {"Authorization": "Bearer " + tok, "anthropic-version": "2023-06-01", "anthropic-beta": "ccr-byoc-2025-07-29,oauth-2025-04-20"}
+    try:
+        org = (json.load(open(os.path.join(os.path.expanduser(LOGINS[login]), ".claude.json"))).get("oauthAccount") or {}).get("organizationUuid")
+        if org:
+            h["x-organization-uuid"] = org
+    except (OSError, ValueError):
+        pass
+    if body is not None:
+        h["content-type"] = "application/json"
+    try:
+        req = urllib.request.Request(API + path, headers=h, data=json.dumps(body).encode() if body is not None else None,
+                                     method="POST" if body is not None else "GET")
+        return json.loads(urllib.request.urlopen(req, timeout=30).read())
+    except urllib.error.HTTPError as e:  # say what was rejected (3 Oct: a bare "HTTP 400" hid the reason)
+        try:
+            msg = json.loads(e.read()).get("error", {}).get("message", "")
+        except Exception:
+            msg = ""
+        raise RuntimeError(f"HTTP {e.code} for {path.split('?')[0]}" + (f": {msg[:300]}" if msg else ""))
+
+
+def events(login, sid):
+    out, after = [], None
+    for _ in range(400):
+        d = api(login, f"/v1/sessions/{sid}/events?beta=true" + (f"&after_id={after}" if after else ""))
+        out += d.get("data") or []
+        if not d.get("has_more") or not d.get("last_id") or d.get("last_id") == after:
+            return out
+        after = d["last_id"]
+    return out
+
+
+def login_of(sid):
+    return next((s["login"] for s in sessions() if s["session"] == sid), "claude-siso")
+
+
+def state_of(sid, login):
+    d = api(login, f"/v1/sessions/{sid}?beta=true")
+    x = d.get("external_metadata") or {}
+    p = x.get("post_turn_summary") or {}
+    return {"session": sid, "status": d.get("session_status") or d.get("status"), "connection": d.get("connection_status"),
+            "github": d.get("github_access"), "cost_usd": round((x.get("usage") or {}).get("cost_usd") or 0, 2),
+            "branches": x.get("current_branches"), "context": (x.get("context_usage") or {}).get("used_tokens"),
+            "category": p.get("status_category"), "detail": p.get("status_detail"), "needs": p.get("needs_action")}
+
+
+def status(argv):
+    rows = [s for s in sessions() if len(argv) < 2 or argv[1].startswith("-") or s["session"] == argv[1]]
+    out = []
+    for r in rows:
+        try:
+            st = state_of(r["session"], r["login"])
+        except RuntimeError as e:
+            st = {"session": r["session"], "error": str(e)}
+        out.append({"task": r.get("task"), "at": r.get("at"), **st})
+    if "--json" in argv:
+        print(json.dumps(out, indent=1))
+        return 0
+    for o in out:
+        if o.get("error"):
+            print(f"{(o['task'] or '-'):<14} {o['session']}  {o['error']}")
+            continue
+        push = "" if o["github"] not in (None, "GITHUB_ACCESS_UNSPECIFIED") else "  CANNOT PUSH (no GitHub access)"
+        print(f"{(o['task'] or '-'):<14} {o['status'] or '?':<8} ${o['cost_usd']:<6} {o['category'] or '-':<11} {(o['detail'] or '')[:90]}{push}")
+        if o.get("needs"):
+            print(f"{'':<14} needs: {o['needs'][:150]}")
+    return 0
+
+
+ASK = ("EFFICIENCY here, for the owner on the laptop: GitHub can't be reached from this session, so we collect your commits as a "
+       "patch. Do exactly this: (1) find the commit the repo was at when this session started (the clone point: the first reflog "
+       "entry) and run, as one Bash call: git log --oneline <that>..HEAD (in the worktree holding your branch). (2) As one Bash "
+       "call: git format-patch --stdout <that>..HEAD | gzip -9 | base64 > /tmp/recover.b64 && split -b 24000 /tmp/recover.b64 "
+       "/tmp/recover-part- && ls /tmp/recover-part-*. (3) Then for EACH part file, a SEPARATE Bash call: cat /tmp/recover-part-XX "
+       "(one file per call, nothing else). (4) Reply with one line: PATCH READY <n> parts, base <full sha of the clone point>, "
+       "branch <your branch name>. Do not push and change nothing else.")
+
+
+def recover(argv):
+    if len(argv) < 2:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    sid = argv[1]
+    login = login_of(sid)
+    if "--ask" in argv:
+        return send(["send", sid, ASK])
+    ev = events(login, sid)
+    cmds, parts, ready = {}, {}, None
+    for e in ev:
+        for c in (e.get("message") or {}).get("content") or []:
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") == "tool_use":
+                cmds[c.get("id")] = str((c.get("input") or {}).get("command", ""))
+            elif c.get("type") == "tool_result":
+                m = re.fullmatch(r"\s*cat /tmp/recover-part-(\w+)\s*", cmds.get(c.get("tool_use_id"), ""))
+                if m:
+                    body = c.get("content")
+                    body = body if isinstance(body, str) else "".join(x.get("text", "") for x in body or [] if isinstance(x, dict))
+                    parts[m[1]] = "".join(l for l in body.splitlines() if re.fullmatch(r"[A-Za-z0-9+/=]+", l.strip()))
+            elif c.get("type") == "text" and "PATCH READY" in (c.get("text") or ""):
+                ready = c["text"]
+    if not ready or not parts:
+        print(f"claude-cloud recover: no patch from {sid} yet (run `claude-cloud recover {sid} --ask`, then wait for PATCH READY)", file=sys.stderr)
+        return 1
+    n = int((re.search(r"PATCH READY (\d+)", ready) or [0, len(parts)])[1])
+    if len(parts) < n:
+        print(f"claude-cloud recover: {len(parts)} of {n} parts read; ask again", file=sys.stderr)
+        return 1
+    try:
+        patch = gzip.decompress(base64.b64decode("".join(parts[k] for k in sorted(parts))))  # gzip's CRC checks the transfer
+    except (ValueError, OSError, EOFError) as e:
+        print(f"claude-cloud recover: the patch did not survive the transfer ({e}); ask again", file=sys.stderr)
+        return 1
+    if not patch.strip():
+        print(f"{sid}: the session made no commits (empty patch); nothing to recover")
+        return 0
+    base = (re.search(r"base ([0-9a-f]{7,40})", ready) or [None, None])[1]
+    task = next((s.get("task") for s in sessions() if s["session"] == sid), None) or sid[-8:]
+    branch = (argv[argv.index("--branch") + 1] if "--branch" in argv else None) or (re.search(r"branch (\S+)", ready) or [None, None])[1] or f"cloud/{task}"
+    branch = branch.rstrip(".,")
+    if branch in ("main", "master", "HEAD"):  # 3 Oct: t-0264 worked on main in its container; never make a local "main"
+        branch = f"cloud/{task}"
+    os.makedirs(os.path.join(STATE, "recover"), exist_ok=True)
+    pf = os.path.join(STATE, "recover", f"{sid}.patch")
+    open(pf, "wb").write(patch)
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True).stdout.strip()
+    if not top or not base:
+        print(f"claude-cloud recover: patch saved to {pf}; run it inside the session's repo to make the branch (base {base})")
+        return 0
+    wt = os.path.join(os.path.expanduser("~/SISO_Workspace/_data/worktrees"), os.path.basename(top), "cloud-" + re.sub(r"[^A-Za-z0-9._-]", "-", task))
+    if subprocess.run(["git", "-C", top, "cat-file", "-e", base + "^{commit}"]).returncode:
+        subprocess.run(["git", "-C", top, "fetch", "-q", "origin"])
+    r = subprocess.run(["git", "-C", top, "worktree", "add", "-q", "-b", branch, wt, base], capture_output=True, text=True)
+    if r.returncode:
+        print(f"claude-cloud recover: could not make {wt} on {branch} at {base}: {r.stderr.strip()[-200:]}; patch is {pf}", file=sys.stderr)
+        return 1
+    a = subprocess.run(["git", "-C", wt, "am", "-q", "--3way", pf], capture_output=True, text=True)
+    if a.returncode:
+        subprocess.run(["git", "-C", wt, "am", "--abort"], capture_output=True)
+        print(f"claude-cloud recover: git am failed in {wt}: {a.stderr.strip()[-300:]}; patch is {pf}", file=sys.stderr)
+        return 1
+    log = subprocess.run(["git", "-C", wt, "log", "--oneline", f"{base}..HEAD"], capture_output=True, text=True).stdout.strip()
+    print(f"recovered {sid} onto {branch} in {wt}:\n{log}")
+    return 0
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0 if argv else 2
+    if argv[0] == "send":
+        return send(argv)
+    if argv[0] == "status":
+        return status(argv)
+    if argv[0] == "recover":
+        return recover(argv)
+    if argv[0] == "list":
+        rows = sessions()
+        print(json.dumps(rows, indent=1) if "--json" in argv else "\n".join(f"{r['at'][:16]} {r['session']} {r['login']} {r['task'] or '-'} {r['url'] or ''}" for r in rows) or "none")
+        return 0
+    return start(list(argv))
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

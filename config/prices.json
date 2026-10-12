@@ -1,0 +1,19 @@
+{
+  "_why": "The one price table (A0 token-ledger brief, decision 6): USD per 1M tokens at Anthropic's published API list price, read 2 Oct 2026 from https://platform.claude.com/docs/en/about-claude/pricing (model pricing table and prompt-caching multipliers). A subscription does not bill this: it is 'what this would cost on the API', the one dollar figure for comparing spend. Read by bin/spend-ledger and scripts/plan-report.py; Agent Base tokens.ts should read this file too. Codex is priced in credits by config/codex-rates.json; DeepSeek (OpenCode Go plan) is unpriced. Models match by the first pattern found in the id, so put specific ids before families.",
+  "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+  "read": "2026-10-02",
+  "unit": "USD per 1M tokens",
+  "fields": { "in": "base input", "cw5m": "5-minute cache write", "cw1h": "1-hour cache write", "cr": "cache hit / refresh", "out": "output" },
+  "aliases": { "opus": "claude-opus-5-5", "sonnet": "claude-sonnet-5-5", "haiku": "claude-haiku-4-5", "fable": "claude-fable-5-1" },
+  "claude": [
+    { "match": "fable-5-1|mythos-5-1", "in": 10, "cw5m": 12.5, "cw1h": 20, "cr": 0.25, "out": 50 },
+    { "match": "fable-5|mythos-5", "in": 10, "cw5m": 12.5, "cw1h": 20, "cr": 1, "out": 50 },
+    { "match": "opus-5-5", "in": 4, "cw5m": 5, "cw1h": 8, "cr": 0.2, "out": 20 },
+    { "match": "opus-5|opus-4-[5-9]", "in": 5, "cw5m": 6.25, "cw1h": 10, "cr": 0.5, "out": 25 },
+    { "match": "opus-4", "in": 15, "cw5m": 18.75, "cw1h": 30, "cr": 1.5, "out": 75 },
+    { "match": "sonnet-5", "in": 2, "cw5m": 2.5, "cw1h": 4, "cr": 0.2, "out": 10 },
+    { "match": "sonnet-4", "in": 3, "cw5m": 3.75, "cw1h": 6, "cr": 0.3, "out": 15 },
+    { "match": "haiku-4-5", "in": 1, "cw5m": 1.25, "cw1h": 2, "cr": 0.1, "out": 5 },
+    { "match": "haiku", "in": 0.8, "cw5m": 1, "cw1h": 1.6, "cr": 0.08, "out": 4 }
+  ]
+}

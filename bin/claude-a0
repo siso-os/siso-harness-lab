@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Agent Zero's launcher: the claude-siso-3 login without the agents' early auto-compact.
+# Shaan, 1 Oct 2026: agents compact at 40-50%, "unless they're agent zero then i'll compact him
+# when i see fit". Every other Claude agent gets CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=45 from its launcher.
+export SISO_A0=1
+# Booted in siso-firstmate, firstmate's subagent guard would deny Monitor and Agent; Agent Zero arms Monitors
+# on its inbox and laptop load, and dispatches through herdr, not fm-spawn (same flag as siso-az).
+export FM_ALLOW_SUBAGENT=1
+exec "$(dirname "$(readlink -f "$0")")/claude-siso-3" "$@"

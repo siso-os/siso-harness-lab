@@ -1,0 +1,7 @@
+#!/bin/bash
+# claude-fahmy: the only way to Fahmy's login (~/.claude's own Keychain login). Plain `claude` is fuzeheritage
+# (bin/claude). Shaan, 3 Oct: "you've got to run like Claude fami to connect to fami's account just to make it harder".
+# Nothing in the estate calls this; it is for Shaan to type.
+V=$(ls "$HOME/.local/share/claude/versions" 2>/dev/null | sort -V | tail -1)
+unset CLAUDE_CONFIG_DIR CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY
+exec "$HOME/.local/share/claude/versions/$V" "$@"

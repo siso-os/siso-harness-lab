@@ -1,0 +1,593 @@
+#!/usr/bin/env python3
+"""agent-move — move a herdr agent to another model, login or harness, from its state (spec:
+.agents/research/2026-10-02-agent-move/SPEC.md).
+
+Shaan, 2 Oct ~15:26: "i could transfer the whole chat over to [Luna] or [Sol] or deep seek or claude ... just from the
+state and a button press ... the infrastructure shouldn't be locked to certain accounts and certain providers".
+
+  agent-move NAME --to opus|fable|sonnet|luna|sol|deepseek [--login L] [--effort E] [--budget KB]
+             [--keep-old] [--force] [--dry-run] [--json]
+  agent-move passport NAME|--transcript FILE [--budget KB] [--json]   write the passport only
+  agent-move targets [--json]
+
+Same harness (Claude model/login, Luna <-> Sol): resume the conversation on the target.
+If Codex refuses resume because the old tab holds its lock, use a fresh agent with its passport; retain the old tab until it answers.
+Across harnesses: a passport (every ask verbatim, its latest summary and checkpoint, its last replies, its work, the
+transcript path) is written and a fresh agent on the target reads it first. The old agent's tab is closed only after
+the new one has answered; its transcript stays on disk. Exit 0 moved, 1 failed (old agent untouched), 2 usage, 3 busy.
+"""
+import datetime as dt, glob, json, os, re, shlex, subprocess, sys, time, tempfile
+
+HOME = os.path.expanduser("~")
+STATE = os.environ.get("AGENT_MOVE_STATE") or os.path.join(HOME, ".local/state/agent-move")
+HERDR = os.environ.get("HERDR_BIN", "herdr")
+REGISTRY = os.environ.get("SPEND_REGISTRY") or os.path.join(HOME, ".local/state/agent-base/registry.json")
+CLAUDE_ROOTS = [os.path.join(HOME, p) for p in (".claude/projects", ".claude-siso/projects", ".config/claude-siso-3/projects")]
+CODEX_ROOT = os.environ.get("CODEX_SESSIONS") or os.path.join(HOME, ".codex/sessions")
+SEAT = os.environ.get("AB_A0_SEAT") or os.path.join(HOME, ".local/state/a0/seat.json")
+BOOTS = os.environ.get("AGENT_MOVE_BOOTS") or os.path.join(os.path.dirname(os.path.realpath(__file__)), "agent-move-boots.json")
+TARGETS = {  # name -> (harness, model)
+    "opus": ("claude", "claude-opus-5-5"), "fable": ("claude", "claude-fable-5-1"), "sonnet": ("claude", "claude-sonnet-5-5"),
+    "luna": ("codex", "gpt-6-luna"), "sol": ("codex", "gpt-6.1-sol"), "deepseek": ("omp", "smol"),
+}
+SECRET = re.compile(r"(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}"
+                    r"|(?i:(?:api[_-]?key|token|secret|password)\s*[=:]\s*)['\"]?[A-Za-z0-9+/_.-]{20,})")
+NOTES = ("Did not move: the old session's background jobs, Monitors and subagents (restart what you still need); tool "
+         "outputs (re-read files rather than trusting old output); anything not below. The full old transcript is at "
+         "from.transcript: grep it for detail before asking anyone.")
+
+
+def mask(s):
+    return SECRET.sub(lambda m: m.group(0)[:6] + "…[masked]", s or "")
+
+
+def clip(s, n):
+    s = s or ""
+    return s if len(s) <= n else s[: n - 20] + f" …[+{len(s) - n + 20} chars]"
+
+
+# ---------- transcripts ----------
+
+def find_transcript(session):
+    for root in CLAUDE_ROOTS:
+        hit = glob.glob(os.path.join(root, "*", session + ".jsonl"))
+        if hit:
+            return "claude", max(hit, key=os.path.getmtime)
+    hit = glob.glob(os.path.join(CODEX_ROOT, "*", "*", "*", f"rollout-*{session}.jsonl"))
+    if hit:
+        return "codex", max(hit, key=os.path.getmtime)
+    return None, None
+
+
+def _human(t):
+    t = re.sub(r"<system-reminder>.*?</system-reminder>", "", t or "", flags=re.S).strip()
+    if not t or t[0] in "</" or t.startswith(("Stop hook feedback", "Caveat:", "[Request interrupted")):
+        return None
+    return t
+
+
+def read_claude(path):
+    out = {"harness": "claude", "asks": [], "said": [], "files": [], "summary": None, "model": None, "cwd": None,
+           "start": None, "tokens": None, "name": None}
+    for line in open(path, errors="replace"):
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        out["start"] = out["start"] or d.get("timestamp")
+        out["cwd"] = d.get("cwd") or out["cwd"]
+        out["name"] = out["name"] or d.get("agentName") or d.get("customTitle")
+        m = d.get("message") or {}
+        c = m.get("content")
+        att = d.get("attachment") or {}
+        if att.get("type") == "queued_command":  # typed in while the agent was mid-turn
+            t = _human(att.get("prompt") if isinstance(att.get("prompt"), str) else "")
+            if t and all(t != x["text"] for x in out["asks"]):
+                out["asks"].append({"at": d.get("timestamp"), "text": t})
+            continue
+        if d.get("type") == "user" and not d.get("isMeta"):
+            if d.get("isCompactSummary"):
+                out["summary"] = c if isinstance(c, str) else " ".join(x.get("text", "") for x in c or [] if isinstance(x, dict))
+                continue
+            if isinstance(c, list):
+                if any(isinstance(x, dict) and x.get("type") == "tool_result" for x in c):
+                    continue
+                c = "\n".join(x.get("text", "") for x in c if isinstance(x, dict) and x.get("type") == "text")
+            t = _human(c if isinstance(c, str) else "")
+            if t and all(t != x["text"] for x in out["asks"][-3:]):
+                out["asks"].append({"at": d.get("timestamp"), "text": t})
+        elif d.get("type") == "assistant":
+            out["model"] = m.get("model") or out["model"]
+            u = m.get("usage") or {}
+            if u:
+                out["tokens"] = sum(u.get(k, 0) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+            for x in c or []:
+                if not isinstance(x, dict):
+                    continue
+                if x.get("type") == "text" and x.get("text", "").strip():
+                    out["said"].append({"at": d.get("timestamp"), "text": x["text"].strip()})
+                elif x.get("type") == "tool_use" and x.get("name") in ("Edit", "Write", "NotebookEdit"):
+                    fp = (x.get("input") or {}).get("file_path") or (x.get("input") or {}).get("notebook_path")
+                    if fp and fp not in out["files"]:
+                        out["files"].append(fp)
+    return out
+
+
+CODEX_SKIP = ("# AGENTS.md instructions", "<environment_context>", "<user_instructions>", "<permissions", "<turn_aborted>")
+
+
+def read_codex(path):
+    out = {"harness": "codex", "asks": [], "said": [], "files": [], "summary": None, "model": None, "cwd": None,
+           "start": None, "tokens": None, "name": None}
+    for line in open(path, errors="replace"):
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        t, p = d.get("type"), d.get("payload") or {}
+        out["start"] = out["start"] or d.get("timestamp")
+        if t == "turn_context":
+            out["model"], out["cwd"] = p.get("model") or out["model"], p.get("cwd") or out["cwd"]
+        elif t == "session_meta":
+            out["cwd"] = out["cwd"] or p.get("cwd")
+        elif t == "compacted":
+            out["summary"] = p.get("message") or out["summary"]
+        elif t == "event_msg" and p.get("type") == "token_count":
+            last = ((p.get("info") or {}).get("last_token_usage") or {})
+            out["tokens"] = last.get("input_tokens") or out["tokens"]
+        elif t == "response_item" and p.get("type") == "message" and p.get("role") in ("user", "assistant"):
+            text = "\n".join(x.get("text", "") for x in p.get("content") or [] if isinstance(x, dict)).strip()
+            if p["role"] == "user":
+                if text and not text.startswith(CODEX_SKIP):
+                    out["asks"].append({"at": d.get("timestamp"), "text": text})
+            elif text:
+                out["said"].append({"at": d.get("timestamp"), "text": text})
+        elif t == "response_item" and p.get("type") in ("custom_tool_call", "function_call"):
+            body = str(p.get("input") or p.get("arguments") or "")
+            for fp in re.findall(r"\*\*\* (?:Update|Add) File: (\S+)", body):
+                if fp not in out["files"]:
+                    out["files"].append(fp)
+    return out
+
+
+# ---------- the passport ----------
+
+def sh(*cmd, cwd=None):
+    try:
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=20)
+        return r.stdout if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def registry_row(name):
+    try:
+        return (json.load(open(REGISTRY)).get("agents") or {}).get(name) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def canonical(name):
+    """herdr names are lower case; the registry's are upper case (EFFICIENCY). Prefer the registry's spelling."""
+    try:
+        keys = [k for k in (json.load(open(REGISTRY)).get("agents") or {}) if k.lower() == name.lower()]
+    except (OSError, ValueError):
+        keys = []
+    return next((k for k in keys if k.isupper()), keys[0] if keys else name)
+
+
+def work_of(name, cwd, start):
+    repo = sh("git", "-C", cwd, "rev-parse", "--show-toplevel").strip() if cwd and os.path.isdir(cwd) else ""
+    w = {"repo": repo or None, "commits": [], "leases": [], "plan_items": [], "checkpoint": None}
+    if not repo:
+        return w
+    if start:
+        w["commits"] = sh("git", "-C", repo, "log", f"--since={start}", "--format=%h %s", "-n", "40").splitlines()
+    leases = sh("dev-lease", "status", "--json")
+    try:
+        w["leases"] = [l for l in json.loads(leases) if (l.get("holder") or "").lower() == name.lower()] if leases else []
+    except (ValueError, AttributeError):
+        pass
+    for f in glob.glob(os.path.join(repo, ".agents/plan/*.json")):
+        try:
+            p = json.load(open(f))
+        except (OSError, ValueError):
+            continue
+        mine = (p.get("owner") or "").lower() == name.lower()
+        for it in p.get("items") or []:
+            to = ((it.get("to") or {}).get("agent") or "").lower() if isinstance(it.get("to"), dict) else ""
+            if (mine or to == name.lower()) and it.get("status") not in ("checked", "dropped"):
+                w["plan_items"].append(f"{it.get('id')} [{it.get('status')}] {it.get('title')}")
+    try:
+        h = open(os.path.join(repo, ".agents/HANDOFF.md"), errors="replace").read()
+        m = re.search(r"^## .*?(?=^## |\Z)", h, flags=re.M | re.S)
+        if m and name.lower() in m.group(0).lower():
+            w["checkpoint"] = m.group(0).strip()
+    except OSError:
+        pass
+    return w
+
+
+def build(name, tr, path, pane=None, budget_kb=32):
+    t = (read_claude if tr == "claude" else read_codex)(path)
+    name = canonical(name or t["name"] or re.sub(r"^.*?([0-9a-f-]{36})\.jsonl$", r"\1", path)[:8])
+    w = work_of(name, t["cwd"], t["start"])
+    reg = registry_row(name)
+    p = {
+        "passport_version": 1, "made": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "agent": {"name": name, **{k: reg.get(k) for k in ("role", "project", "owner", "domain")}},
+        "from": {"harness": t["harness"], "model": t["model"], "session": re.sub(r"^.*?([0-9a-f-]{36})\.jsonl$", r"\1", path),
+                 "transcript": path, "pane": pane, "cwd": t["cwd"], "context_tokens": t["tokens"], "started": t["start"]},
+        "asks": t["asks"], "summary": t["summary"], "checkpoint": w.pop("checkpoint"),
+        "said": t["said"][-12:], "work": {**w, "files": t["files"][-40:]}, "notes": NOTES,
+        "earlier": earlier_passport(t["asks"]), "boot": boot_for(name),
+    }
+    return fit(p, budget_kb * 1024)
+
+
+def earlier_passport(asks):
+    """A moved agent's memory starts with the passport it was given; carry it forward so a second move keeps it."""
+    for x in reversed(asks):
+        m = re.search(r"(/\S+/agent-move/[^\s:]+\.md)", x.get("text", ""))
+        if m and os.path.exists(m.group(1)):
+            body = open(m.group(1), errors="replace").read()
+            return re.sub(r"^#", "##", body.split("\n", 1)[1] if body.startswith("# ") else body, flags=re.M)
+    return None
+
+
+def render(p):
+    a, f = p["agent"], p["from"]
+    L = [f"# Passport: {a['name']}", "",
+         f"You are **{a['name']}**" + (f", {a['role']}" if a.get("role") else "") + (f" (project {a['project']}, reports to {a['owner']})" if a.get("project") else "") + ".",
+         f"Moved from {f['harness']} {f['model'] or ''} (session {f['session']}, {f['context_tokens'] or '?'} tokens of context) "
+         f"at {p['made']}. Working folder: `{f['cwd']}`. Full old transcript: `{f['transcript']}`.", "", p["notes"], ""]
+    if p.get("boot"):
+        L += ["## Boot first", "", "Read these before continuing (HANDOFF.md: its top entry):"] + [f"- `{fp}`" for fp in p["boot"]] + [""]
+    if p.get("earlier"):
+        L += ["## The passport you arrived with (your memory from before your last move)", "", p["earlier"], ""]
+    if p.get("summary"):
+        L += ["## Your latest summary of the conversation (written at your last compaction)", "", p["summary"], ""]
+    if p.get("checkpoint"):
+        L += ["## Your latest checkpoint (top of HANDOFF.md)", "", p["checkpoint"], ""]
+    L += ["## Every ask you were given, verbatim, oldest first", ""]
+    for x in p["asks"]:
+        L += [f"- **{(x.get('at') or '')[:16]}** {x['text']}" if "text" in x else f"- {x['gap']}"]
+    w = p["work"]
+    L += ["", "## Your work"]
+    for k, title in (("plan_items", "Open plan items"), ("commits", "Commits in the repo since you started"),
+                     ("files", "Files you wrote"), ("leases", "Leases you hold")):
+        if w.get(k):
+            L += ["", f"{title}:"] + [f"- {x if isinstance(x, str) else json.dumps(x)}" for x in w[k]]
+    if p["said"]:
+        L += ["", "## Your last replies, oldest first", ""] + [f"- **{(x.get('at') or '')[:16]}** {x['text']}" for x in p["said"]]
+    return mask("\n".join(L) + "\n")
+
+
+def fit(p, limit):
+    """Trim in the spec's order until the rendered Markdown fits: said -> middle asks -> work lists -> checkpoint -> summary."""
+    for x in p["asks"]:
+        x["text"] = clip(x["text"], 2000)
+    for x in p["said"]:
+        x["text"] = clip(x["text"], 1500)
+    size = lambda: len(render(p).encode())
+    while size() > limit and p["said"]:
+        p["said"].pop(0)
+    real = [x for x in p["asks"] if "text" in x]
+    dropped = 0
+    while size() > limit and len(real) > 2:
+        real.pop(1)
+        dropped += 1
+        p["asks"] = [real[0], {"gap": f"[{dropped} older asks trimmed for size; they are in the transcript]"}] + real[1:]
+    for k in ("files", "commits", "plan_items"):
+        while size() > limit and len(p["work"].get(k) or []) > 5:
+            p["work"][k] = p["work"][k][-5:]
+    for k, floor in (("checkpoint", 6000), ("earlier", limit // 2), ("summary", 12000), ("checkpoint", 1500), ("earlier", 6000), ("summary", 4000)):
+        if size() > limit and p.get(k) and len(p[k]) > floor:
+            p[k] = clip(p[k], floor)
+    p["bytes"] = size()
+    return p
+
+
+def write_passport(p):
+    d = os.path.join(STATE, re.sub(r"[^\w.-]", "_", p["agent"]["name"]))
+    os.makedirs(d, exist_ok=True)
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    md, js = os.path.join(d, stamp + ".md"), os.path.join(d, stamp + ".json")
+    for f, body in ((md, render(p)), (js, mask(json.dumps(p, indent=1)))):
+        fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(body)
+    return md
+
+
+# ---------- herdr ----------
+
+def herdr(*args):
+    r = subprocess.run([HERDR, *args], capture_output=True, text=True, timeout=30)
+    try:
+        return json.loads(r.stdout)
+    except ValueError:
+        return {"error": r.stderr or r.stdout}
+
+
+def agents():
+    return (herdr("agent", "list").get("result") or {}).get("agents") or []
+
+
+def find_agent(name):
+    # Agent Base sends its row name ("Agent Zero"); herdr agent names are lowercase with dashes ("agent-zero").
+    key = lambda s: re.sub(r"[\s_-]+", "-", (s or "").strip().lower())
+    n = key(name)
+    rows = agents()
+    if n == "agent-zero" and os.path.exists(SEAT):
+        return [a for a in rows if seat_for(a)]
+    hits = [a for a in rows if key(a.get("name")) == n
+            or key((a.get("terminal_title_stripped") or "").split(" ")[0]) == n or a.get("pane_id") == name]
+    return hits
+
+
+def seat_for(a):
+    try:
+        seat = json.load(open(SEAT))
+    except FileNotFoundError:
+        return None
+    session = (a.get("agent_session") or {}).get("value")
+    return seat if (seat.get("session") == session if seat.get("session") else seat.get("pane") == a.get("pane_id")) else None
+
+
+def transfer_seat(old, pane, session, harness, model, effort, login):
+    # Never overwrite a relay that took the seat while the new agent was starting.
+    current = json.load(open(SEAT))
+    if current != old:
+        raise RuntimeError("Agent Zero's seat changed during the move; both tabs retained")
+    claude_login = login if harness == "claude" else old.get("claude_login_launcher") or old.get("login_launcher")
+    new = {**old, "claude_login_launcher": claude_login if claude_login != "codex" else "claude", "pane": pane, "session": session, "harness": harness, "model": model,
+           "effort": effort, "login_launcher": login if harness == "claude" else "codex",
+           "updated": dt.datetime.now(dt.timezone.utc).isoformat()}
+    fd, tmp = tempfile.mkstemp(prefix=".seat-", dir=os.path.dirname(SEAT))
+    with os.fdopen(fd, "w") as f:
+        json.dump(new, f); f.write("\n"); f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, SEAT)
+    return new
+
+
+def boot_for(name):
+    try:
+        boots = json.load(open(BOOTS))
+    except FileNotFoundError:
+        return []
+    key = re.sub(r"[\s_-]+", "-", name.strip().lower())
+    return [os.path.expanduser(p) for p in boots.get(key, [])]
+
+
+def launch_cmd(name, harness, model, effort, login, prompt, session=None):
+    q = shlex.quote
+    if harness == "claude":
+        resume = f" --resume {q(session)}" if session else ""
+        return f"{login} --model {model} --effort {effort} --dangerously-skip-permissions -n {q(name)}{resume} {q(prompt)}"
+    if harness == "codex":
+        head = f"codex resume {q(session)}" if session else "codex"
+        return f"{head} -m {model} -c model_reasoning_effort={effort} {q(prompt)}"
+    return f"omp --model {model} {q(prompt)}"
+
+
+def replies(session):
+    """Number of assistant replies in a session's transcript (0 when it has none yet)."""
+    tr, path = find_transcript(session) if session else (None, None)
+    return len((read_claude if tr == "claude" else read_codex)(path)["said"]) if path else 0
+
+
+class ResumeLocked(RuntimeError):
+    pass
+
+
+def wait_reply(pane, before=0, timeout=240, session=None):
+    """Done when herdr shows the pane not working and its transcript has more replies than before. Reading the
+    transcript, not catching a 'working' state, so a one-second answer is not missed."""
+    end = time.time() + timeout
+    while time.time() < end:
+        a = next((x for x in agents() if x.get("pane_id") == pane), None)
+        sid = session or ((a or {}).get("agent_session") or {}).get("value")
+        if a and a.get("agent_status") in ("idle", "done") and sid and replies(sid) > before:
+            return sid
+        if session:
+            screen = herdr("pane", "read", pane)
+            if "This conversation is open in another app" in str(screen):
+                raise ResumeLocked("Codex conversation is locked")
+        time.sleep(float(os.environ.get("AGENT_MOVE_POLL", "3")))
+    return None
+
+
+def progress(message):
+    if "--progress-json" in sys.argv:
+        print(json.dumps({"message": message}), file=sys.stderr, flush=True)
+
+
+def move(name, to, login=None, effort=None, budget=32, keep_old=False, force=False, dry=False):
+    if to not in TARGETS:
+        return 2, {"ok": False, "error": f"unknown target {to}; one of {', '.join(TARGETS)}"}
+    hits = find_agent(name)
+    if len(hits) != 1:
+        return 1, {"ok": False, "error": f"{len(hits)} herdr agents match {name}"}
+    a = hits[0]
+    old_seat = seat_for(a)
+    allowed_logins = ("claude-siso", "claude-siso-3") + (("claude",) if old_seat else ())
+    if login and login not in allowed_logins:
+        return 2, {"ok": False, "error": f"login {login} refused for this agent"}
+    name = "agent-zero" if old_seat else canonical(name)
+    src_h = {"claude": "claude", "codex": "codex"}.get(a.get("agent"), a.get("agent"))
+    session = (a.get("agent_session") or {}).get("value")
+    if a.get("agent_status") == "working" and not force and not dry:
+        return 3, {"ok": False, "error": f"{name} is working; move it when idle or pass --force"}
+    tr, path = find_transcript(session) if session else (None, None)
+    if not path:
+        return 1, {"ok": False, "error": f"no transcript for {name} (harness {src_h}, session {session}); "
+                                         "passports are made from Claude and Codex transcripts"}
+    # Herdr also reports Claude wrapper sessions as "siso"; the resolved transcript owns the harness identity.
+    if tr in ("claude", "codex"):
+        src_h = tr
+    dst_h, model = TARGETS[to]
+    effort = effort or ("high" if old_seat or dst_h == "claude" else "medium")
+    if effort not in ("low", "medium", "high", "xhigh", "max"):
+        return 2, {"ok": False, "error": "unsupported effort"}
+    if old_seat:
+        prior_login = old_seat.get("claude_login_launcher") or old_seat.get("login_launcher")
+        login = login or (prior_login if prior_login in allowed_logins else "claude")
+    else:
+        login = login or ("claude-siso-3" if "/claude-siso-3/" in path else "claude-siso")
+    t0 = time.time()
+    res = {"ok": False, "name": name, "from": {"harness": src_h, "model": None, "session": session, "pane": a["pane_id"]},
+           "to": {"harness": dst_h, "model": model}}
+    if src_h == dst_h:
+        res["kind"] = "resume"
+        prompt = (f"You were moved to {model} ({'login ' + login if dst_h == 'claude' else 'Codex'}) by agent-move; the "
+                  "conversation is the same. Reply in one line 'moved: <your next step>', then follow only the latest user assignment, including any instruction to stop and await input.")
+        cmd = launch_cmd(name, dst_h, model, effort, login, prompt, session=session)
+        res["passport"] = None
+    else:
+        res["kind"] = "passport"
+        progress("Writing handover")
+        p = build(name, tr, path, pane=a["pane_id"], budget_kb=budget)
+        res["from"]["model"] = p["from"]["model"]
+        md = write_passport(p)
+        res.update(passport=md, passport_bytes=p["bytes"])
+        prompt = (f"You are {name}, moved here from {src_h} {p['from']['model']} by agent-move. Your passport is {md}: "
+                  "read all of it first; it is your memory. Boot handoffs are context, not new assignments. Then reply in one line 'moved: <your next step>' and follow only the latest user assignment in the passport, including any instruction to stop and await input.")
+        cmd = launch_cmd(name, dst_h, model, effort, login, prompt)
+    if old_seat:
+        cmd = "env SISO_A0=1 " + cmd
+    res["command"] = cmd
+    if dry:
+        res["ok"] = True
+        res["dry_run"] = True
+        return 0, res
+    if dst_h == "claude" and src_h == "claude" and not old_seat:  # claude-move already does the in-pane exit, copy and resume
+        out = subprocess.run(["claude-move", name, a["pane_id"], session, login, effort, model], capture_output=True, text=True, env={**os.environ, **({"SISO_A0": "1"} if old_seat else {})})
+        res.update(ok=out.returncode == 0, to={**res["to"], "session": session, "pane": a["pane_id"]}, detail=(out.stdout + out.stderr).strip())
+        if res["ok"] and old_seat:
+            res["seat"] = transfer_seat(old_seat, a["pane_id"], session, dst_h, model, effort, login)
+        return log(res, t0, 0 if res["ok"] else 1)
+    ws = a.get("workspace_id")
+    cwd = a.get("cwd") or HOME
+    t = herdr("tab", "create", "--workspace", ws, "--cwd", cwd, "--label", "Agent Zero" if old_seat else name, "--no-focus").get("result") or {}
+    pane, tab = (t.get("root_pane") or {}).get("pane_id"), (t.get("tab") or {}).get("tab_id")
+    if not pane:
+        res["error"] = "herdr could not open a tab"
+        return log(res, t0, 1)
+    time.sleep(1.5)
+    baseline = replies(session) if src_h == dst_h else 0
+    progress(f"Starting {to.title()}")
+    herdr("pane", "run", pane, cmd)
+    refused_tab = None
+    try:
+        new_session = wait_reply(pane, baseline, float(os.environ.get("AGENT_MOVE_TIMEOUT", "240")), session=session if src_h == dst_h else None)
+    except ResumeLocked:
+        if dst_h != "codex" or src_h != "codex":
+            raise
+        progress("Resume locked; starting a fresh agent with its passport")
+        progress("Writing handover")
+        p = build(name, tr, path, pane=a["pane_id"], budget_kb=budget)
+        md = write_passport(p)
+        res.update(kind="passport", fallback="resume-locked", passport=md, passport_bytes=p["bytes"])
+        prompt = (f"You are {name}, moved here from {src_h} by agent-move. Your passport is {md}: "
+                  "read all of it first; it is your memory. Boot handoffs are context, not new assignments. Then reply in one line 'moved: <your next step>' and follow only the latest user assignment in the passport, including any instruction to stop and await input.")
+        cmd = launch_cmd(name, dst_h, model, effort, login, prompt)
+        if old_seat:
+            cmd = "env SISO_A0=1 " + cmd
+        res["command"] = cmd
+        refused_tab = tab
+        t = herdr("tab", "create", "--workspace", ws, "--cwd", cwd, "--label", "Agent Zero" if old_seat else name, "--no-focus").get("result") or {}
+        pane, tab = (t.get("root_pane") or {}).get("pane_id"), (t.get("tab") or {}).get("tab_id")
+        if not pane:
+            res["error"] = "herdr could not open a fallback tab; the old one is untouched"
+            return log(res, t0, 1)
+        time.sleep(1.5)
+        progress(f"Starting {to.title()}")
+        herdr("pane", "run", pane, cmd)
+        new_session = wait_reply(pane, 0, float(os.environ.get("AGENT_MOVE_TIMEOUT", "240")))
+    res["to"].update(pane=pane, tab=tab, session=new_session)
+    if not new_session:
+        res["error"] = f"the new agent did not answer in time; it is in {pane}, the old one is untouched"
+        return log(res, t0, 1)
+    progress(f"{to.title()} answered")
+    herdr("agent", "rename", pane, re.sub(r"[^a-z0-9_-]", "-", name.lower())[:32])
+    if old_seat:
+        try:
+            res["seat"] = transfer_seat(old_seat, pane, new_session, dst_h, model, effort, login)
+        except (OSError, ValueError, RuntimeError) as error:
+            res["error"] = str(error)
+            return log(res, t0, 1)
+    if not keep_old:
+        closed = herdr("tab", "close", a["tab_id"])
+        if closed.get("error") or closed.get("ok") is False:
+            res["error"] = "The new agent answered, but the old tab could not be closed"
+            return log(res, t0, 1)
+        progress("Old tab closed")
+    if refused_tab:
+        herdr("tab", "close", refused_tab)
+    # Closing an old tab with the same name can clear herdr's name mapping for the new pane.
+    renamed = herdr("agent", "rename", pane, re.sub(r"[^a-z0-9_-]", "-", name.lower())[:32])
+    if renamed.get("error") or renamed.get("ok") is False:
+        res["error"] = "The new agent answered, but its name could not be restored"
+        return log(res, t0, 1)
+    res["ok"] = True
+    return log(res, t0, 0)
+
+
+def log(res, t0, code):
+    res["secs"] = round(time.time() - t0, 1)
+    os.makedirs(STATE, exist_ok=True)
+    with open(os.path.join(STATE, "log.jsonl"), "a") as f:
+        f.write(json.dumps({"ts": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), **res}) + "\n")
+    return code, res
+
+
+def opt(argv, k, default=None):
+    return argv[argv.index(k) + 1] if k in argv and argv.index(k) + 1 < len(argv) else default
+
+
+def main(argv):
+    js = "--json" in argv
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0 if argv else 2
+    if argv[0] == "targets":
+        t = [{"to": k, "harness": h, "model": m} for k, (h, m) in TARGETS.items()]
+        print(json.dumps(t) if js else "\n".join(f"{x['to']:<9} {x['harness']:<7} {x['model']}" for x in t))
+        return 0
+    budget = int(opt(argv, "--budget", 32))
+    if argv[0] == "passport":
+        path = opt(argv, "--transcript")
+        name = None if path else argv[1]
+        if path:
+            tr = "codex" if "/rollout-" in path else "claude"
+        else:
+            hits = find_agent(name)
+            if len(hits) != 1:
+                print(f"agent-move: {len(hits)} herdr agents match {name}", file=sys.stderr)
+                return 1
+            tr, path = find_transcript((hits[0].get("agent_session") or {}).get("value") or "")
+            if not path:
+                print(f"agent-move: no transcript for {name}", file=sys.stderr)
+                return 1
+        p = build(opt(argv, "--name", name), tr, path, budget_kb=budget)
+        md = write_passport(p)
+        print(json.dumps({"passport": md, "bytes": p["bytes"], "asks": len(p["asks"]), "said": len(p["said"])}) if js else md)
+        return 0
+    if "--to" not in argv:
+        print("agent-move: --to is required", file=sys.stderr)
+        return 2
+    code, res = move(argv[0], opt(argv, "--to"), login=opt(argv, "--login"), effort=opt(argv, "--effort"), budget=budget,
+                     keep_old="--keep-old" in argv, force="--force" in argv, dry="--dry-run" in argv)
+    if js:
+        print(json.dumps(res, indent=1))
+    else:
+        print(("moved " if res.get("ok") else "not moved ") + f"{argv[0]} -> {opt(argv, '--to')}" +
+              (f" ({res.get('kind')})" if res.get("kind") else "") + (f": {res.get('error')}" if res.get("error") else "") +
+              (f"\n  passport {res['passport']} ({res.get('passport_bytes')} bytes)" if res.get("passport") else "") +
+              (f"\n  {res['command']}" if res.get("dry_run") else ""))
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

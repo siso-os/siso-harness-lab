@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# The fuzeheritage Claude subscription (Max): SISO's second login, its own account state and Keychain item.
+# Settings, hooks, skills, agents, commands, plugins and lessons are symlinks in ~/.claude-siso into ~/.claude.
+# Its projects folder is a symlink to ~/.claude/projects, so an agent moved here from claude-siso-3 needs its
+# session file copied from ~/.config/claude-siso-3/projects/<folder>/ first (bin/claude-move does that).
+export CLAUDE_CONFIG_DIR="$HOME/.claude-siso"
+unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
+unset CLAUDE_CODE_OAUTH_REFRESH_TOKEN CLAUDE_CODE_OAUTH_SCOPES
+
+# Compaction: clear any inherited override here; context-cap.sh below sets the agent's hard cap (3 Oct).
+unset CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
+
+# Context cap per agent (Shaan, 2 Oct ~14:25: a scale, ~200k workers to ~600k heavy reasoning): -n NAME or --cap TIER|N
+# picks it from config/context-caps.json and exports CONTEXT_PING_AT for the context-ping hook.
+source "$(dirname "$(readlink -f "$0")")/context-cap.sh"
+siso_context_cap "$@"
+# One config home (native-agents step 4): ~/.claude on fuzeheritage's own token, by default since 2 Oct (A0: each seat
+# moves at its next natural restart; streaming seats excluded until after Oracle production 3 Oct). SISO_ONE_HOME=0 opts out.
+source "$(dirname "$(readlink -f "$0")")/one-home.sh"
+siso_one_home fuzeheritage on
+# Lean boot for agents (Artifact off, unused skills name-only, no claude.ai connectors or Chrome); SISO_FULL_BOOT=1 skips.
+source "$(dirname "$(readlink -f "$0")")/agent-boot.sh"
+siso_agent_boot
+exec "$HOME/.local/bin/claude" ${SISO_ARGS[@]+"${SISO_ARGS[@]}"}

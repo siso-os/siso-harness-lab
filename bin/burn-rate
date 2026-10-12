@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+"""burn-rate — how fast each Claude login and the Codex credits are burning, as % per hour at the current rate.
+
+Shaan, 2 Oct ~14:05: "if we're currently moving at this velocity ... what percent of the claude account are we burning
+through an hour at the current rate, what percent of the codex account ... so I get an understanding of when we should
+be reallocating to luna workers or sol workers". One source of numbers for agents and the Agent Base app (STACK-OPT).
+
+  burn-rate [--window 60] [--json]
+
+Claude, per login (profile dir): the status line records each session's plan limits (rate_limits five_hour and
+seven_day used %); hooks/context-ping.mjs appends a sample when they move (~/.local/state/context-ping/burn/
+samples.jsonl). The rate is the rise in used % over the last WINDOW minutes within the current limit window (a reset
+starts a new line), scaled to an hour, and the hours until 100% at that rate.
+Codex: credits spent in the last WINDOW minutes (bin/codex-credits: rollouts x rate card), as credits/hour, % of the
+60k budget per hour, % of the 15k day per hour, and hours until the budget runs out at that rate.
+Claude dollar grants (so-022, the $250 cloud credits): bin/claude-credits reads each login's grant now (on demand, never
+scheduled) and samples it; the rate is dollars used over the last WINDOW minutes, scaled to an hour, plus days to the
+grant's end and whether it will be spent by then at that rate. Plain `claude` (Fahmy's login) is never read.
+"""
+import datetime as dt, glob, importlib.machinery, importlib.util, json, os, subprocess, sys, time
+
+HERE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+STATE = os.environ.get("CONTEXT_PING_STATE") or os.path.expanduser("~/.local/state/context-ping")
+HOME = os.path.expanduser("~")
+LOGINS = {  # profile dir -> launcher (see .agents/memory/claude-logins.md)
+    os.path.join(HOME, ".claude-siso"): "claude-siso",
+    os.path.join(HOME, ".config", "claude-siso-3"): "claude-siso-3",
+    os.path.join(HOME, ".claude"): "claude",
+}
+
+
+def credits_module():
+    loader = importlib.machinery.SourceFileLoader("codex_credits", os.path.join(HERE, "bin", "codex-credits"))
+    spec = importlib.util.spec_from_loader("codex_credits", loader)
+    m = importlib.util.module_from_spec(spec)
+    loader.exec_module(m)
+    return m
+
+
+def epoch(v):
+    """resets_at / at may be epoch seconds, epoch ms or ISO text."""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return v / 1000 if v > 1e11 else float(v)
+    return dt.datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+
+
+def samples():
+    rows = []
+    try:
+        with open(os.path.join(STATE, "burn", "samples.jsonl")) as f:
+            for line in f:
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    # The latest snapshot of every live session is a sample too (fills the history before the hook has run long).
+    for f in glob.glob(os.path.join(STATE, "ctx", "*.json")):
+        try:
+            cw = json.load(open(f))
+        except (OSError, ValueError):
+            continue
+        rl = cw.get("rate_limits") or {}
+        if not rl:
+            continue
+        rows.append({"at": cw.get("at"), "profile": cw.get("profile") or "unknown",
+                     "h5": (rl.get("five_hour") or {}).get("used_percentage"), "h5_reset": (rl.get("five_hour") or {}).get("resets_at"),
+                     "d7": (rl.get("seven_day") or {}).get("used_percentage"), "d7_reset": (rl.get("seven_day") or {}).get("resets_at")})
+    for r in rows:
+        r["t"] = epoch(r.get("at"))
+    return [r for r in rows if r["t"]]
+
+
+def rate(rows, key, now, window):
+    """% per hour for one limit over the window, within the newest limit window (same resets_at)."""
+    # Resets on the minute: hosted chats report the same reset with different microseconds (FLEET-COST, 7 Oct).
+    on_min = lambda v: None if v is None else round(v / 60) * 60
+    pts = sorted((r["t"], r[key], on_min(epoch(r.get(key + "_reset")))) for r in rows if r.get(key) is not None)
+    if not pts:
+        return None
+    t1, p1, reset = pts[-1]
+    seg = [(t, p) for t, p, rs in pts if rs == reset and t >= now - window * 60]
+    out = {"used_pct": round(p1, 1), "resets_at": dt.datetime.fromtimestamp(reset, dt.timezone.utc).isoformat() if reset else None,
+           "as_of": dt.datetime.fromtimestamp(t1, dt.timezone.utc).isoformat(), "pct_per_hour": None, "hours_to_full": None,
+           "samples": len(seg), "stale": t1 < now - window * 60}
+    if len(seg) >= 2 and seg[-1][0] - seg[0][0] >= 300:  # at least 5 minutes of history
+        per_h = (seg[-1][1] - seg[0][1]) / ((seg[-1][0] - seg[0][0]) / 3600)
+        out["pct_per_hour"] = round(per_h, 2)
+        if per_h > 0:
+            out["hours_to_full"] = round((100 - p1) / per_h, 1)
+    return out
+
+
+def claude(now, window):
+    by = {}
+    for r in samples():
+        by.setdefault(os.path.realpath(r["profile"]) if r["profile"] != "unknown" else "unknown", []).append(r)
+    out = []
+    for prof, rows in sorted(by.items()):
+        out.append({"login": LOGINS.get(prof, os.path.basename(prof)), "profile": prof,
+                    "five_hour": rate(rows, "h5", now, window), "seven_day": rate(rows, "d7", now, window)})
+    return out
+
+
+def codex(now, window):
+    cc = credits_module()
+    b = cc.RATES["budget"]
+    use = cc.scan(b["since"], after=now - window * 60)
+    lo = hi = 0.0
+    by_model = {}
+    for (_, model), t in use.items():
+        c = cc.price(model, t)
+        if c:
+            lo, hi = lo + c[0], hi + c[1]
+            m = by_model.setdefault(model, [0.0, 0.0])
+            m[0], m[1] = m[0] + c[0], m[1] + c[1]
+    scale = 60 / window
+    per_h = [round(lo * scale, 1), round(hi * scale, 1)]
+    r = cc.report()
+    left = r["left"]
+    return {
+        "window_min": window, "credits_per_hour": per_h,
+        "pct_of_budget_per_hour": [round(100 * x / b["total"], 2) for x in per_h],
+        "pct_of_day_per_hour": [round(100 * x / b["per_day"], 2) for x in per_h],
+        "by_model_per_hour": {m: [round(v[0] * scale, 1), round(v[1] * scale, 1)] for m, v in by_model.items()},
+        "today_credits": r["today_credits"], "to_date_credits": r["to_date_credits"], "left": left,
+        "balance": r.get("balance"),  # Codex's own figure, all machines (so-029); the credit fields above are estimates
+        "budget": b["total"], "per_day": b["per_day"], "reset": b["reset"],
+        "hours_left_at_rate": round(left[0] / per_h[1], 1) if per_h[1] > 0 else None,
+    }
+
+
+def grants(now, window):
+    loader = importlib.machinery.SourceFileLoader("claude_credits", os.path.join(HERE, "bin", "claude-credits"))
+    cc = importlib.util.module_from_spec(importlib.util.spec_from_loader("claude_credits", loader))
+    loader.exec_module(cc)
+    try:
+        rows = cc.read_all()
+        cc.sample(rows)
+    except Exception:
+        rows = []
+    try:
+        hist = [json.loads(l) for l in open(os.path.join(cc.STATE, "samples.jsonl")) if l.strip()]
+    except OSError:
+        hist = []
+    out = []
+    for r in rows:
+        for g in r.get("grants", []):
+            mine = [h for h in hist if h["login"] == r["login"] and h["bucket"] == g["bucket"] and epoch(h["at"]) >= now - window * 60]
+            used_in = g["used_usd"] - min((h["used_usd"] for h in mine), default=g["used_usd"])
+            per_h = round(used_in * 60 / window, 2)
+            ends = epoch(g["ends"]) if g.get("ends") else None
+            days_left = round((ends - now) / 86400, 1) if ends else None
+            out.append({"login": r["login"], "email": r.get("email"), "bucket": g["bucket"], "limit_usd": g["limit_usd"],
+                        "used_usd": g["used_usd"], "left_usd": g["left_usd"], "ends": g["ends"], "days_left": days_left,
+                        "usd_per_hour": per_h,
+                        "usd_per_day_to_spend_it": round(g["left_usd"] / days_left, 2) if days_left and g["left_usd"] else None})
+    return out
+
+
+# FLEET-COST, 7 Oct: codex() (session scan + balance) and grants() (each login's grants over the network) took 15-50 s,
+# and Agent Base gives this command 30 s, so /api/usage said "Waiting for the burn source" and agents saw no budget. The
+# Claude plan reading they need is instant; those two now come from a cache that a detached child refreshes when it is
+# older than SLOW_MAX_AGE (one at a time; its output goes nowhere, so it never holds the caller's pipe open).
+SLOW = os.path.join(STATE, "burn", "slow-cache.json")
+SLOW_MAX_AGE = 300
+
+
+def refresh_slow(now, window):
+    cx, gr = codex(now, window), grants(now, window)
+    os.makedirs(os.path.dirname(SLOW), exist_ok=True)
+    tmp = f"{SLOW}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        json.dump({"at": now, "window_min": window, "codex": cx, "grants": gr}, f)
+    os.replace(tmp, SLOW)
+    return cx, gr, now
+
+
+def spawn_refresh(window):
+    lock = SLOW + ".lock"
+    try:
+        os.kill(int(open(lock).read().strip()), 0)
+        return  # a refresher is already running
+    except (OSError, ValueError):
+        pass
+    p = subprocess.Popen([sys.executable, os.path.realpath(__file__), "--refresh-slow", "--window", str(window)],
+                         start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(lock, "w") as f:
+        f.write(str(p.pid))
+
+
+def slow_parts(now, window):
+    try:
+        c = json.load(open(SLOW))
+    except (OSError, ValueError):
+        c = None
+    if not c or c.get("window_min") != window:
+        return refresh_slow(now, window)  # the first reading is computed inline
+    if now - c["at"] > SLOW_MAX_AGE:
+        spawn_refresh(window)
+    return c["codex"], c["grants"], c["at"]
+
+
+def main(argv):
+    window = int(argv[argv.index("--window") + 1]) if "--window" in argv else 60
+    now = time.time()
+    if "--refresh-slow" in argv:
+        refresh_slow(now, window)
+        return 0
+    cx, gr, slow_at = slow_parts(now, window)
+    r = {"at": dt.datetime.fromtimestamp(now, dt.timezone.utc).isoformat(timespec="seconds"), "window_min": window,
+         "claude": claude(now, window), "codex": cx, "grants": gr,
+         "slow_as_of": dt.datetime.fromtimestamp(slow_at, dt.timezone.utc).isoformat(timespec="seconds")}
+    if "--json" in argv:
+        print(json.dumps(r, indent=1))
+        return 0
+    f = lambda v, u="": "-" if v is None else f"{v}{u}"
+    print(f"Burn rate over the last {window} min:")
+    for c in r["claude"]:
+        for k, name in (("seven_day", "week"), ("five_hour", "5h")):
+            x = c[k]
+            if x:
+                full = "" if x["hours_to_full"] is None else f", full in {x['hours_to_full']} h"
+                seen = f"stale, last seen {x['as_of'][11:16]} UTC" if x["stale"] else f"{x['samples']} samples"
+                print(f"  Claude {c['login']:<14} {name:<4} {x['used_pct']}% used, {f(x['pct_per_hour'], '%/h')}{full}"
+                      f" ({seen})")
+    x = r["codex"]
+    rng = lambda p: f"{p[0]}" if p[0] == p[1] else f"{p[0]}-{p[1]}"
+    tail = "" if x["hours_left_at_rate"] is None else f", {x['hours_left_at_rate']} h at this rate"
+    print(f"  Codex credits        {rng(x['credits_per_hour'])}/h = {rng(x['pct_of_budget_per_hour'])}% of {x['budget']:,}/h, "
+          f"{rng(x['pct_of_day_per_hour'])}% of the {x['per_day']:,} day/h; {rng(x['left'])} left{tail} (estimate)")
+    if x.get("balance"):
+        print(f"  Codex balance        {x['balance']['now']:,.1f} credits (Codex's own figure, all machines), "
+              f"{x['balance']['today_spent']:,.1f} spent today")
+    for g in r["grants"]:
+        print(f"  Claude grant {g['login']:<14} ${g['used_usd']:,.2f} of ${g['limit_usd']:,.0f} used, ${g['usd_per_hour']}/h; "
+              f"{g['days_left']} days left: spend ${g['usd_per_day_to_spend_it']}/day to use it all")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

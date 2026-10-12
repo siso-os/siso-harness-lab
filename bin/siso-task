@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""siso-task — say which task this session is spending on, so the token ledger records it instead of guessing.
+
+A0's token-ledger brief (2 Oct 2026, decision 2): the unit is a task (plan item or .agents/tasks/<id>), stamped at launch.
+Launchers stamp a whole session (claude-siso/-3 --task ID, codex-run --task ID, a0-team; env SISO_TASK, SISO_ALLOC).
+An owner that moves between tasks says so mid-session:
+
+  siso-task start so-020 [--alloc usd:40|credits:600|tokens:3M] [--chain opus:spec,luna:build,opus:review]
+                                                                    from now on this session works on so-020
+  siso-task stop                                                    from now on, no task (the ledger may guess)
+  siso-task show [--json]                                           this session's marks
+
+The session is $CLAUDE_CODE_SESSION_ID (Claude Code sets it for Bash), else --session ID, else the herdr agent in
+$HERDR_PANE_ID. Marks go to $SISO_TASK_STATE/marks.jsonl (default ~/.local/state/siso-task): {at, session, task, alloc,
+source, chain}; --chain (env SISO_CHAIN at launch) is the model chain the task runs on (so-021: Opus at one end at least),
+so the ledger can say which chain wins; bin/spend-ledger charges each step to the session's latest mark at or before it.
+Exit 0 ok, 2 usage, 3 no session found.
+"""
+import datetime as dt, json, os, re, subprocess, sys
+
+STATE = os.environ.get("SISO_TASK_STATE") or os.path.expanduser("~/.local/state/siso-task")
+ALLOC = re.compile(r"^(usd|credits|tokens):(\d+(?:\.\d+)?)([kKmM]?)$")
+
+
+def parse_alloc(s):
+    """'credits:600' -> {'credits': 600}; 'tokens:3M' -> {'tokens': 3000000}. None if empty; ValueError if bad."""
+    if not s:
+        return None
+    m = ALLOC.match(s.strip())
+    if not m:
+        raise ValueError(f"alloc must be usd:N, credits:N or tokens:N[k|M], got {s!r}")
+    n = float(m[2]) * {"": 1, "k": 1e3, "m": 1e6}[m[3].lower()]
+    return {m[1]: int(n) if n == int(n) else n}
+
+
+CHAIN = re.compile(r"^[a-z0-9.-]+:[a-z-]+$")
+
+
+def parse_chain(s):
+    """'opus:spec, luna:build,opus:review' -> ['opus:spec', 'luna:build', 'opus:review']. None if empty; ValueError if bad."""
+    if not s:
+        return None
+    steps = [x.strip().lower() for x in s.split(",") if x.strip()]
+    bad = [x for x in steps if not CHAIN.match(x)]
+    if bad or not steps:
+        raise ValueError(f"chain is model:role[,model:role...], e.g. opus:spec,luna:build,opus:review; got {s!r}")
+    return steps
+
+
+def session(argv):
+    if "--session" in argv:
+        return argv[argv.index("--session") + 1]
+    if os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        return os.environ["CLAUDE_CODE_SESSION_ID"]
+    pane = os.environ.get("HERDR_PANE_ID")
+    if pane:
+        try:
+            out = subprocess.run([os.environ.get("HERDR_BIN", "herdr"), "agent", "list"], capture_output=True, text=True, timeout=5).stdout
+            a = next((a for a in json.loads(out)["result"]["agents"] if a.get("pane_id") == pane), None)
+            return ((a or {}).get("agent_session") or {}).get("value")
+        except Exception:
+            return None
+    return None
+
+
+def mark(sid, task, alloc=None, source="declared", at=None, chain=None):
+    os.makedirs(STATE, exist_ok=True)
+    row = {"at": at or dt.datetime.now().astimezone().isoformat(timespec="seconds"), "session": sid, "task": task,
+           "alloc": alloc, "source": source, "chain": chain}
+    with open(os.path.join(STATE, "marks.jsonl"), "a") as f:
+        f.write(json.dumps(row) + "\n")
+    return row
+
+
+def marks():
+    try:
+        return [json.loads(l) for l in open(os.path.join(STATE, "marks.jsonl")) if l.strip()]
+    except OSError:
+        return []
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0 if argv else 2
+    cmd = argv[0]
+    sid = session(argv)
+    if not sid:
+        print("siso-task: no session (not in Claude Code or herdr; pass --session ID)", file=sys.stderr)
+        return 3
+    if cmd == "start" and len(argv) > 1 and not argv[1].startswith("-"):
+        try:
+            alloc = parse_alloc(argv[argv.index("--alloc") + 1]) if "--alloc" in argv else None
+            chain = parse_chain(argv[argv.index("--chain") + 1]) if "--chain" in argv else None
+        except (ValueError, IndexError) as e:
+            print(f"siso-task: {e}", file=sys.stderr)
+            return 2
+        r = mark(sid, argv[1], alloc, chain=chain)
+        print(f"task {r['task']} from {r['at']} (session {sid[:8]})")
+        return 0
+    if cmd == "stop":
+        r = mark(sid, None)
+        print(f"no task from {r['at']} (session {sid[:8]})")
+        return 0
+    if cmd == "show":
+        mine = [m for m in marks() if m.get("session") == sid]
+        print(json.dumps(mine, indent=1) if "--json" in argv else "\n".join(f"{m['at']}  {m['task'] or '-'}  {m.get('source')}" for m in mine) or "no marks")
+        return 0
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

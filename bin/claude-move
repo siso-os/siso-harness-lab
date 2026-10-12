@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# claude-move [--model M] [--effort E] [--cap C] NAME PANE SESSION_ID [TO_LAUNCHER] [EFFORT] [MODEL] [CAP]
+# MODEL defaults to the model the session was last running (read from its transcript; claude-opus-5-5 if unreadable), so
+# a Sonnet agent stays on Sonnet and only the login changes; --model or the sixth argument overrides. CAP is a tier (worker|builder|owner|heavy) or
+# tokens (450k); without it the launcher picks the agent's cap from config/context-caps.json by NAME.
+# Moves a running herdr Claude agent onto another Claude login, keeping its conversation:
+# copies the session file (and its sidecar folder) from the source profile into the target profile's
+# projects folder, exits the agent at its prompt, and resumes the same session under the target launcher.
+# Default target: claude-siso (fuzeheritage). Plain `claude` (Fahmy's login) is refused.
+# Only move an agent that is idle: /exit is typed into its prompt. Never run it on your own pane: it refuses when PANE
+# hosts the caller (A0, 2 Oct 16:02: run from its own pane it typed /exit into itself and reported "did not exit").
+# Once the resumed agent has answered in the target profile, the source copy is renamed
+# <id>.jsonl.moved-to-<login>-<date> (and its sidecar folder alike), so nothing reads the stale copy (A0, 2 Oct: Agent
+# Base read it after A0 renamed the moved session). Nothing is deleted. Exit 0 moved, 1 no session, 2 refused,
+# 3 busy, 4 did not exit, 5 resumed but no answer yet (source copy kept).
+# Background work: /exit on an agent with running shells or monitors opens Claude's "Background work is running" menu
+# (1 Exit and stop tasks / 2 Move to background and exit / 3 Stay; A0, 2 Oct 17:24: HEALTH, exit 4). claude-move picks 2,
+# never 1, so the agent's work keeps running as a background session (`claude attach|logs|stop <id>`), and reports what
+# moved and the session id. If option 2 is not on offer it stops (exit 4) and types nothing more.
+set -euo pipefail
+O_MODEL= O_EFFORT= O_CAP=
+args=()
+while (($#)); do
+  case $1 in
+    --model) O_MODEL=$2; shift 2 ;;
+    --effort) O_EFFORT=$2; shift 2 ;;
+    --cap) O_CAP=$2; shift 2 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+set -- "${args[@]}"
+NAME=$1 PANE=$2 ID=$3 TO=${4:-claude-siso} EFFORT=${O_EFFORT:-${5:-high}} MODEL=${O_MODEL:-${6:-}} CAP=${O_CAP:-${7:-}}
+case $TO in
+  claude-siso)   DST_ROOT=$HOME/.claude/projects ;;          # ~/.claude-siso/projects -> ~/.claude/projects
+  claude-siso-3) DST_ROOT=$HOME/.config/claude-siso-3/projects ;;
+  claude)        echo "claude-move: plain claude is Fahmy's login; keep everything off it (use claude-siso or claude-siso-3)" >&2; exit 2 ;;
+  *) echo "claude-move: unknown launcher $TO" >&2; exit 2 ;;
+esac
+# The caller's own pane: herdr's env var, else any ancestor process (or its terminal) is one of the pane's processes.
+own_pane() {
+  [[ $PANE == "${HERDR_PANE_ID:-}" || $PANE == "${HERDR_PANE:-}" ]] && return 0
+  herdr pane process-info --pane "$PANE" 2>/dev/null | python3 -c '
+import json, os, subprocess, sys
+try: pi = json.load(sys.stdin)["result"]["process_info"]
+except Exception: sys.exit(1)
+pane = {p.get("pid") for p in pi.get("foreground_processes") or []} | {pi.get("foreground_process_group_id")}
+pane.discard(None)
+def ps(pid):
+    o = subprocess.run(["ps", "-o", "ppid=,tty=", "-p", str(pid)], capture_output=True, text=True).stdout.split()
+    return (int(o[0]), o[1]) if len(o) == 2 else (0, "??")
+ttys = {ps(p)[1] for p in pane} - {"??", ""}
+pid = os.getppid()
+while pid > 1:
+    up, tty = ps(pid)
+    if pid in pane or tty in ttys: sys.exit(0)
+    pid = up
+sys.exit(1)'
+}
+if own_pane; then
+  echo "claude-move: $PANE is your own pane; ask another agent (or Shaan) to move you" >&2; exit 2
+fi
+src=$(find "$HOME/.config/claude-siso-3/projects" "$HOME/.claude/projects" -maxdepth 2 -name "$ID.jsonl" -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -1 || true)
+[[ -n $src ]] || { echo "claude-move: no session file for $ID" >&2; exit 1; }
+if [[ -z $MODEL ]]; then  # the model it was running: the last assistant message that names a claude-* model
+  MODEL=$(tail -c 400000 "$src" | python3 -c '
+import json, sys
+m = None
+for l in sys.stdin:
+    try: x = json.loads(l)
+    except ValueError: continue
+    k = (x.get("message") or {}).get("model") if x.get("type") == "assistant" else None
+    if isinstance(k, str) and k.startswith("claude-"): m = k
+print(m or "")' 2>/dev/null || true)
+  MODEL=${MODEL:-claude-opus-5-5}
+fi
+folder=$(basename "$(dirname "$src")"); dst="$DST_ROOT/$folder"
+if [[ "$(dirname "$src")" != "$(cd "$dst" 2>/dev/null && pwd -P || echo none)" ]]; then
+  mkdir -p "$dst"; cp -p "$src" "$dst/"; [[ -d ${src%.jsonl} ]] && cp -Rp "${src%.jsonl}" "$dst/"
+fi
+herdr pane read "$PANE" | tail -4 | grep -q '❯' || { echo "claude-move: $NAME has no visible prompt; not moving a busy agent" >&2; exit 3; }
+herdr pane run "$PANE" "/exit" >/dev/null
+# Wait for Claude's exit line ("Resume this session", or "backgrounded · <id>" after option 2), answering the
+# background-work menu with 2 (once); then give the shell a moment to draw its prompt (typing earlier is lost).
+picked= tasks= bgid= exited=
+for _ in $(seq 1 40); do
+  screen=$(herdr pane read "$PANE" | tail -16)
+  if [[ -z $picked ]] && grep -q 'Background work is running' <<<"$screen"; then
+    grep -q '2\. Move to background and exit' <<<"$screen" || { echo "claude-move: $NAME shows the background-work menu without 'Move to background and exit'; not stopping its tasks; check $PANE" >&2; exit 4; }
+    tasks=$(awk '/will stop when you exit/{on=1;next} /[0-9]\. (Exit|Move|Stay)/{on=0} on && NF{sub(/^ +/,""); printf "%s%s", sep, $0; sep="; "}' <<<"$screen")
+    herdr pane send-keys "$PANE" 2 >/dev/null; picked=1
+  elif grep -q 'Resume this session' <<<"$(tail -4 <<<"$screen")"; then exited=1; break
+  elif [[ -n $picked ]] && bgid=$(grep -o 'backgrounded · [0-9a-f]*' <<<"$screen" | tail -1 | awk '{print $3}') && [[ -n $bgid ]]; then exited=1; break
+  fi
+  perl -e 'select(undef,undef,undef,1)'
+done
+[[ -n $exited ]] || { echo "claude-move: $NAME did not exit; check $PANE" >&2; exit 4; }
+if [[ -n $picked ]]; then
+  echo "claude-move: $NAME had background work (${tasks:-not listed}); moved to background session ${bgid:-?} (claude attach|logs|stop ${bgid:-?}); it keeps running"
+fi
+perl -e 'select(undef,undef,undef,2)'
+msg="You were moved to the $TO Claude login to share the weekly usage limit; nothing else changed. Reply in one line that you are back, then carry on with what you were doing or wait for your next job."
+resumed=$dst/$ID.jsonl
+answers() { local n; n=$(grep -c '"type":"assistant"' "$resumed" 2>/dev/null || true); echo "${n:-0}"; }
+before=$(answers)
+herdr pane run "$PANE" "$TO --model $MODEL --effort $EFFORT${CAP:+ --cap $CAP} --dangerously-skip-permissions -n $NAME --resume $ID '$msg'" >/dev/null
+# Retire the source copy only after the resumed agent has answered in the target profile.
+for _ in $(seq 1 "${CLAUDE_MOVE_WAIT:-180}"); do (($(answers) > before)) && break; perl -e 'select(undef,undef,undef,1)'; done
+if (($(answers) <= before)); then
+  echo "claude-move: $NAME ($ID) -> $TO in $PANE typed, but no answer in $resumed yet; source copy kept at $src" >&2; exit 5
+fi
+if [[ "$(cd "$(dirname "$src")" && pwd -P)" != "$(cd "$dst" && pwd -P)" ]]; then
+  tag=moved-to-$TO-$(date +%Y-%m-%d)
+  mv "$src" "$src.$tag"; [[ -d ${src%.jsonl} ]] && mv "${src%.jsonl}" "${src%.jsonl}.$tag"
+  echo "claude-move: source copy retired as $src.$tag"
+fi
+echo "claude-move: $NAME ($ID) -> $TO in $PANE"

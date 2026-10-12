@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""codex-credits — Codex credits spent, by model and day, against the budget (STACK-OPT, 2 Oct 2026).
+
+Shaan wants ~60k Codex credits spent properly over ~4 days, Luna 80 / Sol 20 (A0 credit program). This reads every
+Codex rollout under ~/.codex/sessions (CODEX_SESSIONS) touched since the budget start, sums each response's
+token_usage_record by its own local day and the model of its turn (turn_context, exact id), and prices it with
+config/codex-rates.json: credits = (input - cached) x input + cached x cached + output x output, per 1M tokens.
+Sol's cached rate is uncertain, so Sol shows low-high. Unknown models are listed with tokens, unpriced.
+
+  codex-credits            the real balance, today, to date, by model, against 15k/day and the Luna/Sol split
+  codex-credits --json     the same, machine-readable (for AGENT-BASE, A0, the stack page)
+  codex-credits --days     one line per day
+  codex-credits --local    this laptop only (no ssh)
+
+The real numbers (a0-003, so-029): Codex writes the account's credit balance into every rollout
+(rate_limits.credits.balance). The balance is one per account, so the newest sample from any machine is the balance,
+and a day's spend is the drop from the last sample before the day to the last one in it. Samples and token usage come
+from this laptop and from CODEX_CREDIT_HOSTS (default "mac-mini siso-vps"; empty = none) over ssh: the script ships
+itself and runs --remote there, so the mini's sessions count. The per-model split prices tokens with
+config/codex-rates.json and is an estimate; the balance is not.
+"""
+import datetime as dt, glob, json, os, subprocess, sys
+
+HERE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+try:  # absent when the script runs itself on another machine (--remote), which needs no rates
+    RATES = json.load(open(os.environ.get("CODEX_RATES") or os.path.join(HERE, "config", "codex-rates.json")))
+except OSError:
+    RATES = None
+RISE = 100  # credits: a smaller rise between two machines' samples is staleness, not a top-up
+HOSTS = os.environ.get("CODEX_CREDIT_HOSTS", "mac-mini siso-vps").split()
+SESSIONS = os.environ.get("CODEX_SESSIONS") or os.path.expanduser("~/.codex/sessions")
+TZ = dt.datetime.now().astimezone().tzinfo
+
+
+def local_day(ts):
+    return dt.datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(TZ).date().isoformat()
+
+
+def scan(since, after=None):
+    """Token sums by (local day, model) from <since> (a day); with after (epoch seconds) only responses after it."""
+    cut = dt.datetime.fromisoformat(since).replace(tzinfo=TZ).timestamp() - 86400  # a day early: the balance baseline
+    if after:
+        cut = max(cut, after)  # a rollout that billed after <after> was modified after it
+    use, bal = {}, []  # (day, model) -> token sums; [(utc ts, balance)] when it moved
+    floor = since_utc(since)
+    for f in glob.glob(os.path.join(SESSIONS, "**", "rollout-*.jsonl"), recursive=True):
+        if os.path.getmtime(f) < cut:
+            continue
+        model = None
+        with open(f, errors="replace") as fh:
+            for line in fh:
+                if '"turn_context"' not in line and '"token_usage_record"' not in line and '"balance"' not in line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                p = e.get("payload") or {}
+                c = ((p.get("rate_limits") or {}).get("credits") or {}).get("balance") if isinstance(p, dict) else None
+                if c is not None and e.get("timestamp", "") >= floor:
+                    if not bal or bal[-1][1] != float(c):
+                        bal.append((e["timestamp"], float(c)))
+                if e.get("type") == "turn_context":
+                    model = p.get("model") or model
+                elif e.get("type") == "token_usage_record" and p.get("usage"):
+                    day = local_day(e["timestamp"])
+                    if day < since:
+                        continue
+                    if after and dt.datetime.fromisoformat(e["timestamp"].replace("Z", "+00:00")).timestamp() < after:
+                        continue
+                    u = p["usage"]
+                    s = use.setdefault((day, model or "unknown"), {"input": 0, "cached": 0, "output": 0, "requests": 0})
+                    s["input"] += u.get("input_tokens", 0)
+                    s["cached"] += u.get("cached_input_tokens", 0)
+                    s["output"] += u.get("output_tokens", 0)
+                    s["requests"] += 1
+    scan.balances = bal
+    return use
+
+
+def since_utc(day):
+    """The UTC timestamp string of local midnight a day before <day>, so the day's baseline sample is kept."""
+    t = dt.datetime.fromisoformat(day).replace(tzinfo=TZ) - dt.timedelta(days=1)
+    return t.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def remote(host, since):
+    """Run this script on <host> (--remote): its token sums and balance samples, or an error."""
+    src = open(os.path.realpath(__file__)).read()
+    try:
+        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", "-o", "RemoteCommand=none", host,
+                            "python3", "-", "--remote", since, str(int(TZ.utcoffset(None).total_seconds()))], input=src, capture_output=True, text=True, timeout=90)
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        return {tuple(k.split("\t")): v for k, v in out["use"].items()}, [tuple(x) for x in out["balances"]], None
+    except Exception as e:
+        return {}, [], f"{type(e).__name__}: {str(e)[:80]}"
+
+
+def gather(since, hosts):
+    use = scan(since)
+    bal = [(t, b, "local") for t, b in scan.balances]
+    machines = [{"host": "local", "error": None, "samples": len(bal)}]
+    for h in hosts:
+        u, b, err = remote(h, since)
+        for k, t in u.items():
+            s = use.setdefault(k, {"input": 0, "cached": 0, "output": 0, "requests": 0})
+            for f in s:
+                s[f] += t[f]
+        bal += [(t, v, h) for t, v in b]
+        machines.append({"host": h, "error": err, "samples": len(b)})
+    return use, sorted(bal), machines
+
+
+def balance(samples, today):
+    """The account balance now and each local day's spend (the drop from its first to its last sample).
+    Concurrent sessions report slightly stale figures (rises of a few credits), so the balance is a running minimum;
+    a rise of RISE or more is a real top-up or grant, reported and not netted against spend. A drop between two samples
+    on different days happened when no machine here wrote one (Codex elsewhere, or a gap): it is a gap, not a day's."""
+    if not samples:
+        return None
+    days, rises, gaps, cur, prev_t = {}, [], [], None, None
+    for t, b, h in samples:
+        d = local_day(t)
+        if cur is not None and b >= cur + RISE:
+            rises.append({"at": t, "by": round(b - cur, 1)})
+            cur = b
+        if cur is not None and d != local_day(prev_t) and cur - b >= 1:
+            gaps.append({"from": prev_t, "to": t, "credits": round(cur - b, 1)})
+            cur = b
+        cur = b if cur is None else min(cur, b)
+        days.setdefault(d, {"start": cur, "end": cur})["end"] = cur
+        prev_t = t
+    return {"now": round(cur, 1), "at": prev_t, "from": samples[-1][2],
+            "today_spent": round(days[today]["start"] - days[today]["end"], 1) if today in days else 0.0,
+            "by_day": {d: round(v["start"] - v["end"], 1) for d, v in sorted(days.items())}, "rises": rises, "gaps": gaps}
+
+
+def price(model, t):
+    r = RATES["models"].get(model)
+    if not r:
+        return None
+    fresh = max(t["input"] - t["cached"], 0)
+    return [round((fresh * r["input"] + t["cached"] * c + t["output"] * r["output"]) / 1e6, 1) for c in (min(r["cached"]), max(r["cached"]))]
+
+
+def report(today=None, hosts=HOSTS):
+    b = RATES["budget"]
+    today = today or dt.datetime.now(TZ).date().isoformat()
+    use, samples, machines = gather(b["since"], hosts)
+    days, models = {}, {}
+    for (day, model), t in sorted(use.items()):
+        c = price(model, t)
+        row = {**t, "credits": c}
+        days.setdefault(day, {})[model] = row
+        m = models.setdefault(model, {"input": 0, "cached": 0, "output": 0, "requests": 0, "credits": [0, 0] if c else None})
+        for k in ("input", "cached", "output", "requests"):
+            m[k] += t[k]
+        if c:
+            m["credits"] = [round(m["credits"][0] + c[0], 1), round(m["credits"][1] + c[1], 1)]
+    tot = lambda rows: [round(sum(r["credits"][i] for r in rows if r["credits"]), 1) for i in (0, 1)]
+    spent = tot(models.values())
+    priced = sum(spent) / 2 or 1
+    return {
+        "today": today, "since": b["since"], "reset": b["reset"],
+        "budget": {"total": b["total"], "per_day": b["per_day"], "split": b["split"]},
+        "today_credits": tot(days.get(today, {}).values()), "to_date_credits": spent,
+        "left": [round(b["total"] - spent[1], 1), round(b["total"] - spent[0], 1)],
+        "share": {m: round((sum(v["credits"]) / 2) / priced, 3) for m, v in models.items() if v["credits"]},
+        "by_model": models, "by_day": days,
+        "unpriced": sorted(m for m, v in models.items() if not v["credits"]),
+        "balance": balance(samples, today), "machines": [{k: v for k, v in m.items()} for m in machines],
+        "estimate": "by_model, share, today_credits and to_date_credits are tokens x config/codex-rates.json; balance is Codex's own",
+    }
+
+
+def rng(c):
+    f = (lambda x: f"{x:,.1f}") if max(c) < 100 else (lambda x: f"{x:,.0f}")
+    return f(c[0]) if c[0] == c[1] else f"{f(c[0])}-{f(c[1])}"
+
+
+def main(argv):
+    if argv[:1] == ["--remote"]:  # on another machine: count days in the caller's zone, not this machine's
+        global TZ
+        TZ = dt.timezone(dt.timedelta(seconds=int(argv[2])))
+        use = scan(argv[1])
+        print(json.dumps({"use": {f"{d}\t{m}": v for (d, m), v in use.items()}, "balances": scan.balances}))
+        return 0
+    r = report(hosts=[] if "--local" in argv else HOSTS)
+    if "--json" in argv:
+        print(json.dumps(r, indent=1))
+        return 0
+    b, bal = r["budget"], r["balance"]
+    if bal:
+        print(f"Codex balance {bal['now']:,.1f} credits (Codex's own figure, {bal['at'][:16].replace('T', ' ')} UTC, {bal['from']}); "
+              f"spent today {bal['today_spent']:,.1f}" + "".join(f"; +{x['by']:,.0f} added {x['at'][:10]}" for x in bal["rises"]))
+        for g in bal["gaps"]:
+            print(f"  {g['credits']:,.1f} went between {g['from'][:16].replace('T', ' ')} and {g['to'][:16].replace('T', ' ')} UTC "
+                  "with no sample on any machine read (not charged to a day)")
+    for m in r["machines"]:
+        if m["error"]:
+            print(f"  {m['host']}: unreachable ({m['error']}); its sessions are not counted")
+    print(f"Estimate from tokens x rates, {r['today']}: today {rng(r['today_credits'])} of {b['per_day']:,}/day; "
+          f"to date {rng(r['to_date_credits'])} of {b['total']:,} since {r['since']} (left {rng(r['left'])}, reset {r['reset']})")
+    for m, v in sorted(r["by_model"].items(), key=lambda kv: -(sum(kv[1]["credits"] or [0]))):
+        label = RATES["models"].get(m, {}).get("label", m)
+        target = b["split"].get(m)
+        share = f", {r['share'][m]:.0%} of spend (target {target:.0%})" if m in r["share"] and target else ""
+        cost = rng(v["credits"]) + " credits" if v["credits"] else "unpriced"
+        print(f"  {label:<14} {cost}{share}; {v['requests']} requests, {v['input']/1e6:.2f}M in "
+              f"({v['cached']/1e6:.2f}M cached), {v['output']/1e6:.3f}M out")
+    if "--days" in argv:
+        for day, ms in sorted(r["by_day"].items()):
+            print(f"  {day}: " + "; ".join(f"{RATES['models'].get(m, {}).get('label', m)} {rng(v['credits']) if v['credits'] else 'unpriced'}" for m, v in ms.items()))
+    if r["unpriced"]:
+        print(f"  unpriced models (no rate in config/codex-rates.json): {', '.join(r['unpriced'])}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

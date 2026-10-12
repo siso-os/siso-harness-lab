@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""heavy: run a CPU- or memory-heavy command in one of N machine-wide slots.
+
+Every agent on this laptop shares 8 cores and 16 GB. On 23 Sep 2026 five agents each
+started tsc, vitest, a build and a Chrome at the same time; load reached 193 and every
+job ran slower than it would have queued. `heavy` queues them instead.
+
+  heavy -- npx tsc -p tsconfig.json --noEmit
+  heavy -- npm run build
+  heavy --status
+  heavy --hold MINUTES "why"   a live test owns this machine: new jobs wait until --release or the hold expires
+  heavy --release
+
+The slot is an flock on a file, so the kernel releases it when the command exits,
+even on a crash or kill -9; a slot can never leak. The command is exec'd, so its exit
+code, signals and output are exactly the command's own.
+
+Env: HEAVY_SLOTS (default 5; raised from 3 on 25 Sep 2026 at Shaan's ask, with several agents queueing), HEAVY_DIR (default ~/.cache/siso-heavy),
+HEAVY_QOS (default utility: the job and its children run below interactive apps on macOS; off or background).
+Also caps vitest at 2 workers unless VITEST_MAX_THREADS / VITEST_MAX_FORKS are set.
+"""
+import fcntl
+import os
+import sys
+import time
+
+SLOTS = max(1, int(os.environ.get("HEAVY_SLOTS", "5")))
+ROOT = os.environ.get("HEAVY_DIR", os.path.expanduser("~/.cache/siso-heavy"))
+SLOT_DIR = os.path.join(ROOT, "slots")
+
+
+def slot_path(i):
+    return os.path.join(SLOT_DIR, f"slot-{i}")
+
+
+def try_slot(i):
+    fd = os.open(slot_path(i) + ".lock", os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except BlockingIOError:
+        os.close(fd)
+        return None
+
+
+def holders():
+    out = []
+    for i in range(SLOTS):
+        fd = try_slot(i)
+        if fd is not None:
+            os.close(fd)
+            continue
+        try:
+            with open(slot_path(i) + ".info") as f:
+                out.append(f"slot {i}: {f.read().strip()}")
+        except OSError:
+            out.append(f"slot {i}: busy")
+    return out
+
+
+HOLD = os.path.join(ROOT, "hold")
+
+
+def hold_info():
+    """The live hold as (until_epoch, why), or None. A hold expires by itself, so a crashed holder can't block forever."""
+    try:
+        until, why = open(HOLD).read().split("\t", 1)
+        until = float(until)
+    except (OSError, ValueError):
+        return None
+    if until <= time.time():
+        try:
+            os.remove(HOLD)
+        except OSError:
+            pass
+        return None
+    return until, why.strip()
+
+
+def status():
+    os.makedirs(SLOT_DIR, exist_ok=True)
+    busy = holders()
+    h = hold_info()
+    if h:
+        print(f"HELD until {time.strftime('%H:%M', time.localtime(h[0]))}: {h[1]} (new jobs wait)")
+    print(f"{len(busy)}/{SLOTS} slots busy")
+    for line in busy:
+        print("  " + line)
+
+
+def main(argv):
+    if argv[:1] == ["--status"]:
+        status()
+        return 0
+    # 2 Oct 2026: live stream presses on the camera laptop stalled three times at load 13-20 while other lanes'
+    # screenshot walks ran. The streaming test holds the machine; jobs already running finish, new ones wait.
+    if argv[:1] == ["--hold"]:
+        minutes = min(max(float(argv[1]), 1), 180) if len(argv) > 1 else 60
+        os.makedirs(ROOT, exist_ok=True)
+        with open(HOLD, "w") as f:
+            f.write(f"{time.time() + minutes * 60}\t{' '.join(argv[2:]) or 'held'} (pid {os.getppid()})")
+        print(f"heavy: held for {minutes:.0f} min")
+        return 0
+    if argv[:1] == ["--release"]:
+        try:
+            os.remove(HOLD)
+        except OSError:
+            pass
+        print("heavy: released")
+        return 0
+    if argv[:1] == ["--"]:
+        argv = argv[1:]
+    if not argv:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    os.makedirs(SLOT_DIR, exist_ok=True)
+    start, told = time.time(), False
+    held_told = False
+    while (h := hold_info()):
+        if not held_told:
+            print(f"heavy: a live test holds this machine until {time.strftime('%H:%M', time.localtime(h[0]))} ({h[1]}); waiting", file=sys.stderr)
+            held_told = True
+        time.sleep(2)
+    while True:
+        for i in range(SLOTS):
+            fd = try_slot(i)
+            if fd is not None:
+                break
+        else:
+            if not told:
+                print(f"heavy: all {SLOTS} slots busy, waiting:", file=sys.stderr)
+                for line in holders():
+                    print("  " + line, file=sys.stderr)
+                told = True
+            time.sleep(0.5)
+            continue
+        break
+    waited = time.time() - start
+    if told:
+        print(f"heavy: got slot {i} after {waited:.0f}s", file=sys.stderr)
+    with open(slot_path(i) + ".info", "w") as f:
+        f.write(f"pid {os.getpid()} since {time.strftime('%H:%M:%S')} in {os.getcwd()}: {' '.join(argv)[:160]}")
+    os.set_inheritable(fd, True)  # the exec'd command holds the slot until it exits
+    os.environ.setdefault("VITEST_MAX_THREADS", "2")
+    os.environ.setdefault("VITEST_MAX_FORKS", "2")
+    os.environ.setdefault("UV_THREADPOOL_SIZE", "2")
+    # Below the apps a person is using: a slot bounds one job, not the processes it forks. On 1 Oct three jobs
+    # (node --test over every file, tsc, vitest) became 30 node processes, load hit 129 and Shaan's live stream
+    # dropped. macOS's utility QoS keeps them (and every child) under the streaming app and the desktop.
+    # HEAVY_QOS=off runs the command as before; HEAVY_QOS=background throttles harder.
+    qos = os.environ.get("HEAVY_QOS", "utility")
+    if qos != "off" and os.path.exists("/usr/sbin/taskpolicy"):
+        argv = ["/usr/sbin/taskpolicy", "-c", qos, *argv]
+    try:
+        os.execvp(argv[0], argv)
+    except OSError as e:
+        print(f"heavy: {argv[0]}: {e.strerror}", file=sys.stderr)
+        return 127
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

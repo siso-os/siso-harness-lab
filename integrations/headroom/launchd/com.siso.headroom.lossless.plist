@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- A reference copy: the live one is ~/Library/LaunchAgents/com.siso.headroom.lossless.plist. Replace /Users/YOU with your home. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.siso.headroom.lossless</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOU/SISO_Workspace/SISO_Agents/siso-harness-lab/integrations/headroom/headroom-sidecar.sh</string>
+    <string>start</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/YOU</string>
+    <key>HEADROOM_BIN</key>
+    <string>/Users/YOU/.local/share/siso-agent-base/headroom/bin/headroom</string>
+    <key>SISO_HEADROOM_HOST</key>
+    <string>127.0.0.1</string>
+    <key>SISO_HEADROOM_PORT</key>
+    <string>18790</string>
+    <key>SISO_HEADROOM_ANTHROPIC_UPSTREAM</key>
+    <string>http://127.0.0.1:8080/anthropic</string>
+    <key>SISO_HEADROOM_OPENAI_UPSTREAM</key>
+    <string>https://api.openai.com</string>
+    <key>SISO_HEADROOM_RUNTIME_DIR</key>
+    <string>/Users/YOU/.local/state/siso-headroom/runtime</string>
+    <key>SISO_HEADROOM_STATE_DIR</key>
+    <string>/Users/YOU/.local/state/siso-headroom</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/YOU/.local/state/siso-headroom/sidecar.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/.local/state/siso-headroom/sidecar.log</string>
+</dict>
+</plist>

@@ -1,0 +1,647 @@
+#!/usr/bin/env python3
+"""spend-ledger — the token ledger as a learning loop: spend -> task -> outcome -> verdict -> fix or standardize.
+
+Shaan, 2 Oct ~15:50: "a ledger of where all of our tokens have spent but in a way we can actually use it and not just see
+the high score ... was it over or under allocated did it work well did it work bad it worked bad why fix it it worked good
+why standardize it ... agent zero can look at". Brief: siso-firstmate/.agents/a0/tell/2026-10-02-token-ledger.md (a0-021,
+so-020). The unit is a task: a plan item id or an .agents/tasks/<id> folder.
+
+  spend-ledger build [--day D | --since D] [--json]   rebuild .agents/efficiency/spend.jsonl rows for those days
+  spend-ledger task ID [--json]                       one task: rows, spent, alloc, spent/alloc, verdict
+  spend-ledger verdict ID --verdict good|ok|bad --outcome done|reworked|failed|superseded --why "<one line>"
+        [--evidence PATH] [--by NAME] [--alloc usd:N|credits:N|tokens:N] [--attempts N]
+        [--fix "<what to change>" [--plan PLAN.json]]          bad: a LEDGER.jsonl fix row (+ an item on that plan)
+        [--standard "<what to reuse>" --link PATH]             good: what becomes the template, and where it now lives
+  spend-ledger widget [--days 7] [--json]             for A0: worst 5 tasks by spent/alloc, open fixes, standardized
+  spend-ledger chains [--days 30] [--json]            which model chain wins, per task kind, from the verdicts (so-021)
+  spend-ledger split [--day D] [--json]               Codex credits per model that day against Shaan's split (Luna 80 /
+                                                      Sol 20, config/codex-rates.json budget), who spent the Sol, and the
+                                                      reasons logged with codex-sol-why (a0-003)
+Verdicts also take --kind asap-judgment|asap-spec|can-wait and --chain opus:spec,luna:build,opus:review (default: the
+chain stamped on the task's rows: siso-task --chain, SISO_CHAIN at launch, codex-run --chain, a "CHAIN:" brief line).
+
+Spend rows (spend.jsonl), one per day x task x session x actor kind x model; sub-agents are their own rows:
+  {day, task, item, plan, project, owner, actor, session, parent, harness, model, kind: main|subagent|codex,
+   sub{id, agentType, description}, tokens{in, cw, cr, out, reasoning}, steps, avg_ctx,
+   cost{usd_equiv, credits[lo, hi]}, alloc, chain, attribution: stamped|guessed|none}
+Cloud sessions (bin/claude-cloud, paid from a login's dollar grant, so-022) have no local transcript: each day's rise in
+the grant's used dollars between two bin/claude-credits samples goes to the cloud sessions started before it (within 6 h),
+as rows with harness/kind "cloud" and cost.grant_usd (real grant dollars); with no such session, "unattributed:cloud".
+Attribution, first that applies: a siso-task mark for the session at or before the step (launch env SISO_TASK via the
+context-ping hook, codex-run --task, siso-task start) -> stamped; a "TASK: <id>" first line in the session's brief, or
+an a0-team worker name a0-<tier>-<id> -> stamped; the agent's next inbox line naming a plan id (spend-report's rule) -> guessed; else task
+"unattributed:<project>", attribution none. Dollars come from config/prices.json (one table, cited); Codex in credits
+from config/codex-rates.json. Verdicts (verdicts.jsonl) are written by the reviewer when a task closes.
+"""
+import collections, datetime as dt, glob, importlib.machinery, importlib.util, json, os, re, sys
+
+HERE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+WS = os.path.expanduser("~/SISO_Workspace")
+OUT = os.environ.get("SPEND_LEDGER_DIR") or os.path.join(HERE, ".agents", "efficiency")
+SPEND = os.path.join(OUT, "spend.jsonl")
+VERDICTS = os.path.join(OUT, "verdicts.jsonl")
+LEDGER = os.path.join(OUT, "LEDGER.jsonl")
+PRICES = json.load(open(os.environ.get("SISO_PRICES") or os.path.join(HERE, "config", "prices.json")))
+TZ = dt.datetime.now().astimezone().tzinfo
+WORKER = re.compile(r"^a0-(luna|sol)-(.+)$")
+TASK_LINE = re.compile(r"^\s*TASK:\s*([A-Za-z0-9][\w.-]*)", re.M)
+CHAIN_LINE = re.compile(r"^\s*CHAIN:\s*(\S+)", re.M)
+
+
+def load(name, file):
+    loader = importlib.machinery.SourceFileLoader(name, os.path.join(HERE, file))
+    m = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
+    loader.exec_module(m)
+    return m
+
+
+sr = load("spend_report", "bin/spend-report")
+st = load("siso_task", "bin/siso-task")
+cc = load("codex_credits", "bin/codex-credits")
+
+
+def now():
+    return dt.datetime.now(TZ).isoformat(timespec="seconds")
+
+
+def ts(s):
+    return dt.datetime.fromisoformat(str(s).replace("Z", "+00:00")).astimezone(TZ)
+
+
+def price(model):
+    m = PRICES["aliases"].get(model or "", model or "")
+    return next((p for p in PRICES["claude"] if re.search(p["match"], m)), None)
+
+
+def usd(model, u):
+    """API-list dollars for one Claude step. Claude Code writes 1h cache writes; the 5m/1h split is used when present."""
+    p = price(model)
+    if not p:
+        return 0.0
+    cw = u.get("cache_creation_input_tokens", 0)
+    split = u.get("cache_creation") or {}
+    h1, m5 = split.get("ephemeral_1h_input_tokens"), split.get("ephemeral_5m_input_tokens")
+    cw_cost = (h1 * p["cw1h"] + m5 * p["cw5m"]) if h1 is not None and m5 is not None else cw * p["cw1h"]
+    return (u.get("input_tokens", 0) * p["in"] + cw_cost + u.get("cache_read_input_tokens", 0) * p["cr"]
+            + u.get("output_tokens", 0) * p["out"]) / 1e6
+
+
+def credits(model, inp, cached, out):
+    """Codex credits [lo, hi] for one response at config/codex-rates.json (bin/codex-credits' rule, unrounded)."""
+    r = cc.RATES["models"].get(model)
+    if not r:
+        return [0.0, 0.0]
+    fresh = max(inp - cached, 0)
+    return [(fresh * r["input"] + cached * c + out * r["output"]) / 1e6 for c in (min(r["cached"]), max(r["cached"]))]
+
+
+def chain_of(s):
+    try:
+        return st.parse_chain(s)
+    except ValueError:
+        return None
+
+
+def text_of(c):
+    if isinstance(c, str):
+        return c
+    return "\n".join(b.get("text", "") for b in c or [] if isinstance(b, dict) and b.get("type") == "text")
+
+
+# ---- spend events -----------------------------------------------------------------------------------------------
+def claude_events(days):
+    """One event per assistant message on those days, main sessions and sub-agents apart."""
+    pr = sr.load("plan_report", "scripts/plan-report.py")
+    lo = dt.datetime.fromisoformat(min(days)).replace(tzinfo=TZ).timestamp()
+    seen_files, seen_msgs, ev, meta = set(), set(), [], {}
+    for root in pr.ROOTS:
+        root = os.path.expanduser(root)
+        for f in glob.glob(root + "/*/*.jsonl") + glob.glob(root + "/*/*/subagents/*.jsonl"):
+            rf = os.path.realpath(f)
+            if rf in seen_files or os.path.getmtime(f) < lo:
+                continue
+            seen_files.add(rf)
+            sub = "/subagents/" in f
+            sid = os.path.basename(os.path.dirname(os.path.dirname(f))) if sub else os.path.basename(f)[:-6]
+            info = meta.setdefault(sid, {"name": None, "cwd": "", "brief": None})
+            sub_info = None
+            if sub:
+                try:
+                    mj = json.load(open(f[:-6] + ".meta.json"))
+                except (OSError, ValueError):
+                    mj = {}
+                sub_info = {"id": os.path.basename(f)[:-6].replace("agent-", ""), "agentType": mj.get("agentType"),
+                            "description": mj.get("description")}
+            for line in open(f, errors="replace"):
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if not sub:
+                    info["name"] = info["name"] or d.get("agentName") or d.get("customTitle")
+                    info["cwd"] = info["cwd"] or d.get("cwd") or ""
+                    if info["brief"] is None and d.get("type") == "user" and not d.get("isMeta"):
+                        t = text_of((d.get("message") or {}).get("content"))
+                        if t.strip() and not t.lstrip().startswith("<"):
+                            m = TASK_LINE.search(t[:2000])
+                            info["brief"] = m[1] if m else ""
+                            c = CHAIN_LINE.search(t[:2000])
+                            info["chain"] = chain_of(c[1]) if c and m else None
+                if d.get("type") != "assistant" or not d.get("timestamp") or pr.day_of(d["timestamp"]) not in days:
+                    continue
+                m = d.get("message") or {}
+                key = (m.get("id"), sub_info and sub_info["id"])
+                if key in seen_msgs:
+                    continue
+                seen_msgs.add(key)
+                u = m.get("usage") or {}
+                ev.append({"t": ts(d["timestamp"]), "session": sid, "harness": "claude", "model": m.get("model") or "?",
+                           "kind": "subagent" if sub else "main", "sub": sub_info,
+                           "tokens": {"in": u.get("input_tokens", 0), "cw": u.get("cache_creation_input_tokens", 0),
+                                      "cr": u.get("cache_read_input_tokens", 0), "out": u.get("output_tokens", 0), "reasoning": 0},
+                           "usd": usd(m.get("model"), u), "credits": [0.0, 0.0]})
+    herdr = sr.herdr_names()
+    for e in ev:
+        i = meta.get(e["session"], {})
+        e["actor"] = i.get("name") or herdr.get(e["session"]) or sr.short(i.get("cwd"))
+        e["cwd"], e["brief"], e["chain"] = i.get("cwd", ""), i.get("brief") or None, i.get("chain")
+    return ev
+
+
+def codex_events(days):
+    names = sr.herdr_names()
+    lo = dt.datetime.fromisoformat(min(days)).replace(tzinfo=TZ).timestamp()
+    ev = []
+    for f in glob.glob(os.path.join(cc.SESSIONS, "**", "rollout-*.jsonl"), recursive=True):
+        if os.path.getmtime(f) < lo:
+            continue
+        model, sid, cwd, brief, chain = None, None, "", None, None
+        for line in open(f, errors="replace"):
+            if brief is None and '"role":"user"' in line.replace(" ", ""):
+                try:
+                    p = json.loads(line).get("payload") or {}
+                    t = "\n".join(c.get("text", "") for c in p.get("content") or [] if isinstance(c, dict))
+                    if t.strip() and not t.lstrip().startswith(("#", "<")):
+                        m = TASK_LINE.search(t[:2000])
+                        brief = m[1] if m else ""
+                        c = CHAIN_LINE.search(t[:2000])
+                        chain = chain_of(c[1]) if c and m else None
+                except ValueError:
+                    pass
+            if not any(k in line for k in ('"session_meta"', '"turn_context"', '"token_usage_record"')):
+                continue
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            p = e.get("payload") or {}
+            if e.get("type") == "session_meta":
+                sid, cwd = p.get("id") or p.get("session_id"), p.get("cwd", "")
+            elif e.get("type") == "turn_context":
+                model, cwd = p.get("model") or model, p.get("cwd") or cwd
+            elif e.get("type") == "token_usage_record" and p.get("usage") and cc.local_day(e["timestamp"]) in days:
+                u = p["usage"]
+                cached = u.get("cached_input_tokens", 0)
+                c = credits(model, u.get("input_tokens", 0), cached, u.get("output_tokens", 0))
+                ev.append({"t": ts(e["timestamp"]), "session": sid, "harness": "codex", "model": model or "?", "kind": "codex",
+                           "sub": None, "actor": names.get(sid) or "codex " + sr.short(cwd), "cwd": cwd, "brief": brief or None,
+                           "chain": chain,
+                           "tokens": {"in": max(u.get("input_tokens", 0) - cached, 0), "cw": u.get("cache_write_input_tokens", 0),
+                                      "cr": cached, "out": u.get("output_tokens", 0), "reasoning": u.get("reasoning_output_tokens", 0)},
+                           "usd": 0.0, "credits": c})
+    return ev
+
+
+def cloud_rows(days, items, active_h=6):
+    """The grant's spend, charged by interval: each rise between two samples goes, in equal shares, to the claude-cloud
+    sessions started before the later sample and within active_h hours of it (claude-cloud samples just before each
+    start, so a session's spend begins at its own interval). A rise with no such session stays unattributed:cloud."""
+    cstate = os.environ.get("CLAUDE_CREDITS_STATE") or os.path.expanduser("~/.local/state/claude-credits")
+    lstate = os.environ.get("CLAUDE_CLOUD_STATE") or os.path.expanduser("~/.local/state/claude-cloud")
+    samples = sorted(read_jsonl(os.path.join(cstate, "samples.jsonl")), key=lambda r: ts(r["at"]))
+    launches = read_jsonl(os.path.join(lstate, "log.jsonl"))
+    acc = {}
+    for login, bucket in sorted({(r["login"], r["bucket"]) for r in samples}):
+        prev = 0.0
+        for r in (x for x in samples if x["login"] == login and x["bucket"] == bucket):
+            t, spent, prev = ts(r["at"]), r["used_usd"] - prev, r["used_usd"]
+            day = t.date().isoformat()
+            if spent <= 0 or day not in days:
+                continue
+            ses = [l for l in launches if l.get("login") == login and ts(l["at"]) < t
+                   and (t - ts(l["at"])).total_seconds() <= active_h * 3600]
+            for l in ses or [None]:
+                k = (day, login, (l or {}).get("session"))
+                a = acc.setdefault(k, {"l": l, "usd": 0.0})
+                a["usd"] += spent / (len(ses) or 1)
+    out = []
+    for (day, login, _), a in sorted(acc.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2] or "")):
+        l = a["l"] or {}
+        task = l.get("task") or "unattributed:cloud"
+        it = items.get(base_item(task, items) or "", {})
+        out.append({"day": day, "task": task, "item": base_item(task, items), "plan": it.get("plan"),
+                    "project": it.get("project") or "cloud", "owner": it.get("owner") or "cloud", "actor": f"cloud {login}",
+                    "session": l.get("session"), "parent": None, "harness": "cloud", "model": "cloud", "kind": "cloud",
+                    "sub": None, "tokens": {"in": 0, "cw": 0, "cr": 0, "out": 0, "reasoning": 0}, "steps": 0, "avg_ctx": 0,
+                    "cost": {"usd_equiv": round(a["usd"], 4), "credits": [0.0, 0.0], "grant_usd": round(a["usd"], 4)},
+                    "alloc": l.get("alloc"), "chain": l.get("chain"), "attribution": "stamped" if l.get("task") else "none"})
+    return out
+
+
+# ---- attribution ------------------------------------------------------------------------------------------------
+def mark_index():
+    by = collections.defaultdict(list)
+    for m in st.marks():
+        try:
+            by[m["session"]].append((ts(m["at"]), m))
+        except (KeyError, ValueError):
+            continue
+    for v in by.values():
+        v.sort(key=lambda x: x[0])
+    return by
+
+
+def stamped(e, marks):
+    """The session's mark in force at this step. A launch mark (env, codex-run) covers the session from its start."""
+    ms = marks.get(e["session"]) or []
+    hit = None
+    for at, m in ms:
+        if at <= e["t"] or m.get("source") in ("env", "codex-run") and hit is None:
+            hit = m
+    return hit
+
+
+def base_item(task, items):
+    if task in items:
+        return task
+    b = re.sub(r"-\d+$", "", task)
+    return b if b in items else None
+
+
+def build(days):
+    items = sr.plan_items()
+    try:
+        reg = json.load(open(sr.REGISTRY)).get("agents", {})
+    except (OSError, ValueError):
+        reg = {}
+    marks = mark_index()
+    reps = collections.defaultdict(list)
+    for d in days:
+        for t, a, ids, _ in sr.reports(d, items.keys()):
+            reps[a.upper()].append((t, ids))
+    rows = {}
+    for e in claude_events(days) + codex_events(days):
+        project, owner = sr.who(e["actor"], e["cwd"], reg)
+        m = stamped(e, marks)
+        alloc, chain = None, None
+        if m and m.get("task"):
+            tasks, how, alloc, chain = [m["task"]], "stamped", m.get("alloc"), m.get("chain")
+        elif e.get("brief"):
+            tasks, how, chain = [e["brief"]], "stamped", e.get("chain")
+        elif WORKER.match(e["actor"]):  # a0-team names its worker a0-<tier>-<task id> at launch; A0 specs and reviews
+            w = WORKER.match(e["actor"])
+            tasks, how, chain = [w[2]], "stamped", ["opus:spec", f"{w[1]}:build", "opus:review"]
+        else:
+            nxt = next((ids for t, ids in sorted(reps.get(e["actor"].upper(), [])) if t >= e["t"].replace(second=0, microsecond=0) and ids), None)
+            tasks, how = (nxt, "guessed") if nxt else ([f"unattributed:{project}"], "none")
+        share = 1 / len(tasks)
+        day = e["t"].date().isoformat()
+        for task in tasks:
+            sub = e["sub"] or {}
+            k = (day, task, e["session"], e["kind"], sub.get("id"), e["model"])
+            it = items.get(base_item(task, items) or "", {})
+            r = rows.setdefault(k, {
+                "day": day, "task": task, "item": base_item(task, items), "plan": it.get("plan"),
+                "project": it.get("project") or project, "owner": it.get("owner") or owner, "actor": e["actor"],
+                "session": e["session"], "parent": e["session"] if e["kind"] == "subagent" else None, "harness": e["harness"],
+                "model": e["model"], "kind": e["kind"], "sub": e["sub"],
+                "tokens": {"in": 0, "cw": 0, "cr": 0, "out": 0, "reasoning": 0}, "steps": 0, "ctx_sum": 0,
+                "cost": {"usd_equiv": 0.0, "credits": [0.0, 0.0]}, "alloc": alloc, "chain": chain, "attribution": how})
+            for f, v in e["tokens"].items():
+                r["tokens"][f] += round(v * share)
+            r["steps"] += share  # a step guessed to two tasks counts half in each
+            r["ctx_sum"] += (e["tokens"]["in"] + e["tokens"]["cw"] + e["tokens"]["cr"]) * share
+            r["cost"]["usd_equiv"] += e["usd"] * share
+            r["cost"]["credits"] = [r["cost"]["credits"][0] + e["credits"][0] * share, r["cost"]["credits"][1] + e["credits"][1] * share]
+            r["alloc"] = r["alloc"] or alloc
+            r["chain"] = r.get("chain") or chain
+    out = []
+    for r in rows.values():
+        r["avg_ctx"] = round(r.pop("ctx_sum") / r["steps"]) if r["steps"] else 0
+        r["steps"] = round(r["steps"], 2)
+        r["cost"]["usd_equiv"] = round(r["cost"]["usd_equiv"], 4)
+        r["cost"]["credits"] = [round(x, 2) for x in r["cost"]["credits"]]
+        out.append(r)
+    out += cloud_rows(days, items)
+    out.sort(key=lambda r: (r["day"], r["task"], r["session"] or "", r["kind"], (r["sub"] or {}).get("id") or ""))
+    return out
+
+
+def write_rows(days, rows):
+    os.makedirs(OUT, exist_ok=True)
+    keep = [l for l in read_jsonl(SPEND) if l.get("day") not in days]
+    tmp = SPEND + ".tmp"
+    with open(tmp, "w") as f:
+        for r in keep + rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    os.replace(tmp, SPEND)
+
+
+def read_jsonl(path):
+    try:
+        return [json.loads(l) for l in open(path) if l.strip()]
+    except OSError:
+        return []
+
+
+# ---- tasks, allocation, verdicts --------------------------------------------------------------------------------
+def alloc_of(task, rows):
+    """A task's allocation: a stamp's alloc, else the plan item's `alloc`, else its .agents/tasks/<id>/STATE.json."""
+    a = next((r["alloc"] for r in rows if r.get("alloc")), None)
+    if a:
+        return a
+    files = glob.glob(sr.PLANS) if sr.PLANS else [f for depth in range(1, 6) for f in glob.glob(WS + "/*" * depth + "/.agents/plan/*.json")]
+    for f in files:
+        try:
+            for it in json.load(open(f)).get("items") or []:
+                if it.get("id") in (task, re.sub(r"-\d+$", "", task)) and it.get("alloc"):
+                    return it["alloc"]
+        except (OSError, ValueError):
+            continue
+        s = os.path.join(os.path.dirname(os.path.dirname(f)), "tasks", task, "STATE.json")
+        try:
+            a = json.load(open(s)).get("alloc")
+            if a:
+                return a
+        except (OSError, ValueError):
+            pass
+    return None
+
+
+def spent_of(rows):
+    t = {"usd_equiv": round(sum(r["cost"]["usd_equiv"] for r in rows), 2),
+         "credits": [round(sum(r["cost"]["credits"][0] for r in rows), 1), round(sum(r["cost"]["credits"][1] for r in rows), 1)],
+         "tokens": sum(sum(r["tokens"][k] for k in ("in", "cw", "cr", "out")) for r in rows)}
+    return t
+
+
+def vs(spent, alloc):
+    """spent / alloc in the allocation's own unit; None when there is no allocation to compare with."""
+    if not isinstance(alloc, dict):
+        return None
+    if alloc.get("credits"):
+        return round(spent["credits"][1] / alloc["credits"], 2)
+    if alloc.get("usd"):
+        return round(spent["usd_equiv"] / alloc["usd"], 2)
+    if alloc.get("tokens"):
+        return round(spent["tokens"] / alloc["tokens"], 2)
+    return None
+
+
+def task_view(task):
+    rows = [r for r in read_jsonl(SPEND) if r["task"] == task]
+    alloc = alloc_of(task, rows)
+    spent = spent_of(rows)
+    v = [x for x in read_jsonl(VERDICTS) if x["task"] == task]
+    return {"task": task, "rows": rows, "spent": spent, "alloc": alloc, "vs_alloc": vs(spent, alloc),
+            "attribution": dict(collections.Counter(r["attribution"] for r in rows)), "verdict": v[-1] if v else None}
+
+
+def opt(argv, k, d=None):
+    return argv[argv.index(k) + 1] if k in argv and argv.index(k) + 1 < len(argv) else d
+
+
+def next_id(plan, prefix):
+    n = max([int(m[1]) for it in plan.get("items", []) for m in [re.match(re.escape(prefix) + r"(\d+)$", it.get("id", ""))] if m] or [0])
+    return f"{prefix}{n + 1:03d}"
+
+
+def verdict(argv):
+    task = argv[1]
+    v, outcome, why = opt(argv, "--verdict"), opt(argv, "--outcome"), opt(argv, "--why")
+    if v not in ("good", "ok", "bad") or outcome not in ("done", "reworked", "failed", "superseded") or not why:
+        raise SystemExit("usage: spend-ledger verdict ID --verdict good|ok|bad --outcome done|reworked|failed|superseded --why '...'")
+    fix, std, link, plan_file = opt(argv, "--fix"), opt(argv, "--standard"), opt(argv, "--link"), opt(argv, "--plan")
+    if v == "bad" and not fix:
+        raise SystemExit("a bad verdict needs --fix '<what to change>' (it becomes a LEDGER.jsonl row)")
+    if v == "good" and not (std and link):
+        raise SystemExit("a good verdict needs --standard '<what to reuse>' and --link <where it now lives>")
+    view = task_view(task)
+    alloc = st.parse_alloc(opt(argv, "--alloc")) if opt(argv, "--alloc") else view["alloc"]
+    chains = collections.Counter(",".join(r["chain"]) for r in view["rows"] if r.get("chain"))
+    chain = st.parse_chain(opt(argv, "--chain")) if opt(argv, "--chain") else (chains.most_common(1)[0][0].split(",") if chains else None)
+    kind = opt(argv, "--kind")
+    if kind and kind not in KINDS:
+        raise SystemExit(f"--kind is one of {', '.join(KINDS)}")
+    by = opt(argv, "--by") or os.environ.get("SISO_AGENT_NAME") or "?"
+    row = {"at": now(), "task": task, "by": by, "spent": view["spent"], "alloc": alloc, "vs_alloc": vs(view["spent"], alloc),
+           "outcome": outcome, "attempts": int(opt(argv, "--attempts", 1)), "verdict": v, "why": why, "kind": kind, "chain": chain,
+           "evidence": opt(argv, "--evidence"), "action": "fix" if v == "bad" else "standardize" if v == "good" else "none",
+           "attribution": view["attribution"], "ledger_ref": None, "plan_ref": None, "standard": None}
+    if v == "bad":
+        row["ledger_ref"] = f"LEDGER.jsonl#task={task}"
+        with open(LEDGER, "a") as f:
+            f.write(json.dumps({"at": row["at"][:16] + row["at"][19:], "by": by, "kind": "tokens", "what": f"{task}: {why}",
+                                "evidence": row["evidence"], "cost": {"spent": row["spent"], "alloc": alloc, "vs_alloc": row["vs_alloc"]},
+                                "fix": fix, "owner": by, "status": "open", "task": task, "spend_ref": f"spend.jsonl#task={task}"},
+                               ensure_ascii=False) + "\n")
+        if plan_file:
+            p = json.load(open(plan_file))
+            prefix = re.match(r"([a-z0-9]+-)", (p.get("items") or [{}])[0].get("id", "x-")) or None
+            iid = next_id(p, prefix[1] if prefix else "fix-")
+            p.setdefault("items", []).append({"id": iid, "title": f"Fix after {task}: {fix}", "his": None, "intent": [],
+                                              "spec": None, "status": "asked", "to": None, "evidence": [f"verdicts.jsonl task={task}: {why}"],
+                                              "parent": None, "at": row["at"], "source": f"verdict {task}"})
+            p["updated"] = row["at"]
+            tmp = plan_file + ".tmp"
+            json.dump(p, open(tmp, "w"), indent=2, ensure_ascii=False)
+            open(tmp, "a").write("\n")
+            os.replace(tmp, plan_file)
+            row["plan_ref"] = f"{os.path.basename(plan_file)}#{iid}"
+    if v == "good":
+        row["standard"] = {"what": std, "link": link}
+    with open(VERDICTS, "a") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return row
+
+
+KINDS = ("asap-judgment", "asap-spec", "can-wait")
+
+
+def chains(days=30):
+    """Which chain wins: closed tasks grouped by kind and chain, with verdicts, spend per task and spent/alloc."""
+    since = (dt.datetime.now(TZ).date() - dt.timedelta(days=days - 1)).isoformat()
+    last = {}
+    for v in read_jsonl(VERDICTS):
+        if v["at"][:10] >= since:
+            last[v["task"]] = v
+    groups = {}
+    for v in last.values():
+        k = (v.get("kind") or "unknown", " > ".join(v.get("chain") or []) or "unstamped")
+        g = groups.setdefault(k, {"kind": k[0], "chain": k[1], "tasks": [], "good": 0, "ok": 0, "bad": 0,
+                                  "usd_equiv": 0.0, "credits": 0.0, "vs": []})
+        g["tasks"].append(v["task"])
+        g[v["verdict"]] += 1
+        g["usd_equiv"] += v["spent"]["usd_equiv"]
+        g["credits"] += v["spent"]["credits"][1]
+        if v.get("vs_alloc") is not None:
+            g["vs"].append(v["vs_alloc"])
+    out = []
+    for g in groups.values():
+        n = len(g["tasks"])
+        out.append({"kind": g["kind"], "chain": g["chain"], "tasks": n, "good": g["good"], "ok": g["ok"], "bad": g["bad"],
+                    "good_share": round(g["good"] / n, 2), "usd_per_task": round(g["usd_equiv"] / n, 2),
+                    "credits_per_task": round(g["credits"] / n, 1),
+                    "vs_alloc_avg": round(sum(g["vs"]) / len(g["vs"]), 2) if g["vs"] else None, "task_ids": g["tasks"]})
+    out.sort(key=lambda c: (c["kind"], -c["good_share"], c["bad"], c["usd_per_task"] + c["credits_per_task"] / 100))
+    return {"at": now(), "since": since, "chains": out,
+            "note": "per kind, the first chain wins: most good verdicts, fewest bad, then cheapest per task. Few tasks = weak evidence."}
+
+
+def widget(days=7):
+    """A0's ledger widget: the worst 5 tasks this week by spent/alloc (bad verdicts first), open fixes, standardized."""
+    since = (dt.datetime.now(TZ).date() - dt.timedelta(days=days - 1)).isoformat()
+    rows = [r for r in read_jsonl(SPEND) if r["day"] >= since]
+    verdicts = [v for v in read_jsonl(VERDICTS) if v["at"][:10] >= since]
+    last = {v["task"]: v for v in verdicts}
+    tasks = collections.defaultdict(list)
+    for r in rows:
+        tasks[r["task"]].append(r)
+    cards = []
+    for t in set(tasks) | set(last):
+        if t.startswith("unattributed:"):
+            continue
+        rs = tasks.get(t, [])
+        spent = spent_of(rs) if rs else (last[t]["spent"] if t in last else spent_of([]))
+        alloc = (last.get(t) or {}).get("alloc") or alloc_of(t, rs)
+        v = last.get(t)
+        cards.append({"task": t, "item": next((r["item"] for r in rs if r.get("item")), None), "owner": next((r["owner"] for r in rs), v and v["by"]),
+                      "spent": spent, "alloc": alloc, "vs_alloc": vs(spent, alloc), "verdict": v and v["verdict"],
+                      "why": v and v["why"], "action": v and v["action"],
+                      "models": sorted({r["model"] for r in rs}), "subagents": sum(1 for r in rs if r["kind"] == "subagent"),
+                      "chain": (v or {}).get("chain") or next((r["chain"] for r in rs if r.get("chain")), None)})
+    # Worst first: a bad verdict, then over its allocation (by how far), then the biggest spend.
+    cards.sort(key=lambda c: (c["verdict"] != "bad", -max((c["vs_alloc"] or 0) - 1, 0), -c["spent"]["usd_equiv"], -c["spent"]["credits"][1]))
+    total = sum(r["cost"]["usd_equiv"] for r in rows) or 1
+    share = collections.Counter()
+    for r in rows:
+        share[r["attribution"]] += r["cost"]["usd_equiv"]
+    fixes = [l for l in read_jsonl(LEDGER) if l.get("status") == "open"]
+    return {"at": now(), "since": since, "worst": cards[:5],
+            "open_fixes": [{"at": l.get("at"), "task": l.get("task"), "what": l.get("what"), "fix": l.get("fix"), "owner": l.get("owner")}
+                           for l in fixes][-10:],
+            "open_fixes_total": len(fixes),
+            "standardized": [{"at": v["at"], "task": v["task"], "by": v["by"], "what": v["standard"]["what"], "link": v["standard"]["link"]}
+                             for v in verdicts if v.get("action") == "standardize" and v.get("standard")],
+            "verdicts": len(verdicts), "tasks": len(cards), "chains": chains(30)["chains"][:6],
+            "attribution_usd_share": {k: round(v / total, 3) for k, v in share.items()},
+            "note": "usd_equiv = tokens x Anthropic API list price (config/prices.json): what it would cost on the API, not a bill"}
+
+
+def split_view(day):
+    """Codex credits by model for one day from spend.jsonl rows (build that day first), against the budget split."""
+    want = cc.RATES.get("budget", {}).get("split", {})
+    by, who = collections.defaultdict(lambda: [0.0, 0.0]), collections.defaultdict(lambda: collections.defaultdict(float))
+    for r in read_jsonl(SPEND):
+        if r.get("day") != day or r.get("harness") != "codex":
+            continue
+        lo, hi = r["cost"]["credits"]
+        by[r["model"]][0] += lo
+        by[r["model"]][1] += hi
+        who[r["model"]][r.get("actor") or "?"] += hi
+    tot = [sum(v[0] for v in by.values()), sum(v[1] for v in by.values())]
+    mid = lambda v: (v[0] + v[1]) / 2
+    sol_log = os.path.join(os.environ.get("CODEX_SOL_STATE") or os.path.expanduser("~/.local/state/codex-sol"), "log.jsonl")
+    whys = [w for w in read_jsonl(sol_log) if str(w.get("at", ""))[:10] == day]
+    tmid = mid(tot) or 1
+    return {"day": day, "credits": [round(x, 1) for x in tot],
+            "models": {m: {"credits": [round(v[0], 1), round(v[1], 1)], "share": round(mid(v) / tmid, 2), "target": want.get(m),
+                           "top": [[a, round(c, 1)] for a, c in sorted(who[m].items(), key=lambda x: -x[1])[:5]]}
+                       for m, v in sorted(by.items(), key=lambda x: -mid(x[1]))},
+            "sol_reasons": [{"name": w.get("name"), "by": w.get("by"), "task": w.get("task"), "why": w.get("why")} for w in whys]}
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0 if argv else 2
+    cmd, js = argv[0], "--json" in argv
+    if cmd == "build":
+        today = dt.datetime.now(TZ).date()
+        if opt(argv, "--since"):
+            d0 = dt.date.fromisoformat(opt(argv, "--since"))
+            days = {(d0 + dt.timedelta(n)).isoformat() for n in range((today - d0).days + 1)}
+        else:
+            days = {opt(argv, "--day") or today.isoformat()}
+        rows = build(days)
+        write_rows(days, rows)
+        s = collections.Counter()
+        for r in rows:
+            s[r["attribution"]] += r["cost"]["usd_equiv"]
+        summary = {"days": sorted(days), "rows": len(rows), "usd_equiv": round(sum(s.values()), 2),
+                   "credits": [round(sum(r["cost"]["credits"][0] for r in rows), 1), round(sum(r["cost"]["credits"][1] for r in rows), 1)],
+                   "by_attribution_usd": {k: round(v, 2) for k, v in s.items()}, "file": SPEND}
+        print(json.dumps(summary, indent=1) if js else
+              f"{summary['rows']} rows for {', '.join(summary['days'])}: ${summary['usd_equiv']:,.0f} API-equivalent, "
+              f"{summary['credits'][0]:,.0f}-{summary['credits'][1]:,.0f} Codex credits; by attribution "
+              + ", ".join(f"{k} ${v:,.0f}" for k, v in summary["by_attribution_usd"].items()) + f" -> {SPEND}")
+        return 0
+    if cmd == "task" and len(argv) > 1:
+        v = task_view(argv[1])
+        if js:
+            print(json.dumps(v, indent=1))
+        else:
+            print(f"{v['task']}: ${v['spent']['usd_equiv']:,.2f} + {v['spent']['credits'][1]:,.1f} cr, {v['spent']['tokens']:,} tokens; "
+                  f"alloc {v['alloc'] or '-'}; spent/alloc {v['vs_alloc'] if v['vs_alloc'] is not None else '-'}; {v['attribution']}")
+            for r in v["rows"]:
+                print(f"  {r['day']} {r['kind']:<8} {r['actor'][:24]:<24} {r['model']:<20} ${r['cost']['usd_equiv']:>8.2f} "
+                      f"{r['cost']['credits'][1]:>7.1f}cr {r['steps']:>4} steps  {(r['sub'] or {}).get('description') or ''}")
+        return 0
+    if cmd == "verdict" and len(argv) > 1:
+        r = verdict(argv)
+        print(json.dumps(r, indent=1) if js else f"verdict {r['task']}: {r['verdict']} ({r['outcome']}), spent/alloc "
+              f"{r['vs_alloc'] if r['vs_alloc'] is not None else '-'}; action {r['action']}"
+              + (f"; fix -> {r['ledger_ref']}" + (f", {r['plan_ref']}" if r["plan_ref"] else "") if r["action"] == "fix" else ""))
+        return 0
+    if cmd == "split":
+        v = split_view(opt(argv, "--day") or dt.datetime.now(TZ).date().isoformat())
+        if js:
+            print(json.dumps(v, indent=1))
+            return 0
+        print(f"Codex credits {v['day']}: {v['credits'][0]:,.0f}-{v['credits'][1]:,.0f} (tokens x config/codex-rates.json; this machine's rows)")
+        for m, x in v["models"].items():
+            tgt = f"target {x['target']:.0%}" if x["target"] is not None else "no target"
+            print(f"  {m:<14} {x['credits'][0]:>7,.0f}-{x['credits'][1]:<7,.0f} {x['share']:>4.0%} ({tgt})  top: "
+                  + ", ".join(f"{a} {c:,.0f}" for a, c in x["top"][:3]))
+        print(f"  Sol reasons logged that day (codex-sol-why): {len(v['sol_reasons'])}")
+        for w in v["sol_reasons"]:
+            print(f"    {w['name']} ({w['by']}): {w['why']}")
+        if not v["sol_reasons"] and v["models"].get("gpt-6.1-sol", {}).get("credits", [0, 0])[1]:
+            print("    none: every Sol credit that day ran without a stated reason")
+        return 0
+    if cmd == "chains":
+        c = chains(int(opt(argv, "--days", 30)))
+        if js:
+            print(json.dumps(c, indent=1))
+        else:
+            for g in c["chains"]:
+                print(f"{g['kind']:<14} {g['chain']:<40} {g['tasks']} tasks  good {g['good']} ok {g['ok']} bad {g['bad']}  "
+                      f"${g['usd_per_task']}/task + {g['credits_per_task']} cr  x{g['vs_alloc_avg'] if g['vs_alloc_avg'] is not None else '-'}")
+            print(c["note"])
+        return 0
+    if cmd == "widget":
+        w = widget(int(opt(argv, "--days", 7)))
+        if js:
+            print(json.dumps(w, indent=1))
+        else:
+            print(f"since {w['since']}: {w['tasks']} tasks, {w['verdicts']} verdicts, {w['open_fixes_total']} open fixes")
+            for c in w["worst"]:
+                print(f"  {c['task']:<20} ${c['spent']['usd_equiv']:>8.2f} + {c['spent']['credits'][1]:>6.1f}cr  "
+                      f"x{c['vs_alloc'] if c['vs_alloc'] is not None else '-'}  {c['verdict'] or '-'}  {c['why'] or ''}")
+        return 0
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

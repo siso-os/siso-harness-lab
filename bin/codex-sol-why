@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""codex-sol-why --by LAUNCHER --name LANE [--task ID] --why "<reason>" — record why a Codex lane runs on Sol.
+
+Shaan's Codex split is Luna 80 / Sol 20 of credits, and Sol costs 20x Luna per token (config/codex-rates.json). A0, 2 Oct:
+agents never inherit the global Codex default (Shaan's own app setting); every agent-side start passes -m gpt-6-luna, and Sol
+runs only with an explicit --sol plus a reason, stamped where the ledger reads it. This appends that reason to
+~/.local/state/codex-sol/log.jsonl; `spend-ledger split --day D` lists each Sol spender with its reason, or "no reason
+logged". Callers: codex-run --sol --why, a0-team <id> sol (SISO_SOL_WHY), and any owner starting a Sol lane by hand.
+Exit 0 logged, 2 no reason given (the caller must not start Sol).
+"""
+import datetime as dt, json, os, sys
+
+STATE = os.environ.get("CODEX_SOL_STATE") or os.path.expanduser("~/.local/state/codex-sol")
+
+
+def opt(a, k):
+    return a[a.index(k) + 1] if k in a and a.index(k) + 1 < len(a) else ""
+
+
+def main(a):
+    why, name = opt(a, "--why").strip(), opt(a, "--name").strip()
+    if not why or not name:
+        print('codex-sol-why: Sol needs --name LANE and --why "<heavier coding | check-in: what and why>"; start it on Luna otherwise',
+              file=sys.stderr)
+        return 2
+    os.makedirs(STATE, exist_ok=True)
+    row = {"at": dt.datetime.now().astimezone().isoformat(timespec="seconds"), "by": opt(a, "--by") or "hand", "name": name,
+           "task": opt(a, "--task") or None, "why": why}
+    with open(os.path.join(STATE, "log.jsonl"), "a") as f:
+        f.write(json.dumps(row) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

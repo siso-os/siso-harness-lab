@@ -1,0 +1,7 @@
+#!/bin/sh
+# open-private-url URL — opens URL in a private browser window (Chrome incognito), so a sign-in starts with no account
+# already signed in. claude-token-login sets it as $BROWSER for `claude setup-token`: twice on 2 Oct the browser's own
+# signed-in account (fuzeheritage) was authorised when lordsisodia was wanted.
+[ -n "$1" ] || { echo "usage: open-private-url URL" >&2; exit 2; }
+if [ -d "/Applications/Google Chrome.app" ]; then exec open -na "Google Chrome" --args --incognito "$1"; fi
+exec open "$1"
