@@ -16,7 +16,8 @@ export const FETCH = new Set(["Read", "Grep", "Glob", "Bash", "WebFetch", "WebSe
 export const AT = 3, GAP_MS = 10 * 60_000, EVERY = 15, BACK_AT = 6, BACK_EVERY = 20;
 export const TEXT = "You have made 3 read/search/command calls in a row yourself. If more digging is needed, give it to the " +
   "scout agent (Haiku 5.5, ~40x cheaper per token; or any sub-agent with model haiku) as one precise question asking for " +
-  "a short answer with file:line, and work from its return. Keep judgement and the final edit yourself.";
+  "a short answer with file:line, and work from its return; several questions go to several scouts in one message " +
+  "(skill haiku-leverage has the patterns). Keep judgement and the build yourself.";
 
 // Pure: next state and whether to nudge.
 // Bash counts as fetching only when it reads (13 Oct: a deploy/commit chain was turned back as "digging").

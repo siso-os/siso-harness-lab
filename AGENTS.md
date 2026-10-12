@@ -1,7 +1,7 @@
 # SISO Harness Lab: how every agent works, and what it costs
 
 **In one line:** the agent-stack project. It makes Shaan's Claude Code (and Codex) seats do more useful work per plan
-token: Opus thinks, the Haiku 5.5 team does the hands-work. District `SISO_Agents`, GitHub sisodias/siso-harness-lab.
+token: Opus builds and reasons; the Haiku 5.5 agents gather its context and run its checks (Shaan, 13 Oct). District `SISO_Agents`, GitHub sisodias/siso-harness-lab.
 
 | Door | |
 |---|---|
@@ -23,7 +23,7 @@ token: Opus thinks, the Haiku 5.5 team does the hands-work. District `SISO_Agent
   A0's `seat-fresh`: HANDOFF, then a new conversation), spend-glance, estate-guard. Each has an off
   switch in its header and a test in `tests/`.
 - **Instruments** (`scripts/`): `token-where.py` (where plan tokens go; headline $ per Shaan request, Opus fetch-loop
-  share), `injection-cost.py` (what reminders, hooks and listings cost), `compact-window-sim.py`, `cache-ttl-sim.py`,
+  share), `injection-cost.py` (what reminders, hooks and listings cost), `usage-tasks.py` (cost per seat and per task, waste named; Agent Base's Usage page serves it via /api/usage/tasks), `compact-window-sim.py`, `cache-ttl-sim.py`,
   `harness-bench.py` (real tasks across models/configs, graded by hand), `stack-page.py --post` (the page:
   http://127.0.0.1:8891/card/agent-stack/html).
 - **Commands** (`bin/`): the launchers (`claude-siso`, `claude-siso-3`, `claude-move`, ...), `self-compact`, `heavy`,
