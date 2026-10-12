@@ -52,6 +52,7 @@ export function config(env = process.env) {
     step: num(env.CONTEXT_PING_STEP, 100_000),
     repeat: num(env.CONTEXT_PING_REPEAT, 50_000),
     boundary: num(env.CONTEXT_PING_BOUNDARY, 100_000),
+    fresh: num(env.CONTEXT_PING_FRESH, 150_000), // finished task above this: HANDOFF, then seat-fresh (Shaan 13 Oct)
     state: env.CONTEXT_PING_STATE || path.join(homedir(), ".local", "state", "context-ping"),
     // A test's own STATE never reads the live host records unless it names a hosts folder too.
     hosts: env.AB_HOSTS_DIR || (env.CONTEXT_PING_STATE ? null : path.join(homedir(), ".local", "state", "agent-base", "hosts")),
@@ -149,17 +150,24 @@ export function decide(ctx, prev, cfg) {
   };
 }
 
-// Pure: a Bash command that appends a finish line to the A0 inbox marks a task boundary.
+// Pure: a finished task. Either a finish line appended to the A0 inbox, or the seat writing its .agents/HANDOFF.md
+// (the handover a fresh start boots from; 13 Oct, Shaan: "checkpoint ... write handover doc ... slash new").
 const FINISH = /\bDONE\b|\bDEV back\b|\bPAGE POSTED\b/; // the A0 inbox convention is upper-case DONE
 export function finishedTask(input) {
+  if (/^(Edit|Write|MultiEdit)$/.test(input?.tool_name || "")) return /\.agents\/HANDOFF\.md$/.test(String(input.tool_input?.file_path || ""));
   const cmd = input?.tool_name === "Bash" ? String(input.tool_input?.command || "") : "";
   return /a0\/inbox\.log/.test(cmd) && />>/.test(cmd) && FINISH.test(cmd);
 }
 
+// Above cfg.fresh a finished task starts a NEW conversation (seat-fresh, A0 13 Oct: ECOSYSTEM 130 MB -> 26k context),
+// instead of compacting: every Opus call re-reads the whole chat, and calls over 150k were 64% of cost (12 Oct).
+// Compaction itself stays at 33% (Shaan). Informing only; the seat decides.
 export function boundaryText(input, tokens, cfg) {
-  if (!finishedTask(input) || !(tokens > cfg.boundary)) return null;
-  return `Task boundary: you just reported a finished task at ${k(tokens)} tokens. Compact now (the self-compact ` +
-    `skill) so the next task starts small, unless Shaan or Agent Zero told you otherwise.`;
+  if (!finishedTask(input) || !(tokens > (cfg.fresh ?? cfg.boundary))) return null;
+  return `Task boundary: you just finished a task at ${k(tokens)} tokens, and every later call re-reads all of it. ` +
+    `Make sure the top of .agents/HANDOFF.md says what is done and the next step, then as your LAST action run ` +
+    `\`nohup seat-fresh <your seat name> --note 'next: ...' >/dev/null 2>&1 &\` and end your turn: the seat restarts ` +
+    `as a new conversation (~20-40k) that reads the HANDOFF. Skip it if Shaan is mid-conversation with you or told you otherwise.`;
 }
 
 // The footer's numbers, from what the status line last saw for this session.

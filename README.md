@@ -18,6 +18,7 @@
 </p>
 
 <!-- /siso-os:header -->
+
 The long-running project to make Shaan's Claude Code and Codex agent setup produce more useful work per token. Evidence, decisions, backlog, and measurement tools. The setup itself lives in `~/.claude`, `~/.codex`, and `SISO_Agents/siso-harness-lab/brain`.
 
 Agents: read `AGENTS.md`. Humans: `STATE.md` says what is true now, `BACKLOG.md` what is next, `DECISIONS.md` what has been ruled.

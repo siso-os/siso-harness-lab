@@ -13,3 +13,7 @@ requests/*.lock
 brain/*.bak-*
 # The token ledger: verdicts are the reviewers' record (kept); spend.jsonl is rebuilt by bin/spend-ledger build (ignored).
 !.agents/efficiency/verdicts.jsonl
+
+# Raw captures kept on disk, not in git (12 Oct, HARNESS): a copy of Agent Base source (its own repo has it) and a 3.6 MB raw spawn trace (parsed results are committed beside it).
+reports/2026-10-05-agent-base-efficiency/source-snapshot/
+reports/2026-10-05-agent-base-efficiency/exec-sample.txt

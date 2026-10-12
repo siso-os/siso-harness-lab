@@ -2,6 +2,7 @@
 - **The map:** `~/SISO_Workspace/AGENTS.md`. Find anything with `estate where <words>`.
 - **A repo:** `<repo>/AGENTS.md`, `<repo>/.agents/HANDOFF.md` (where work stands) and `<repo>/.agents/memory/` (durable facts).
 - **Worktrees:** `_data/worktrees/<repo>/<lane>`.
+- **Over 1 GB onto the laptop:** `estate storage --help` first; on HOLD, GitHub or the mini.
 - **Agent Zero:** `SISO_Agents/agent-zero/siso-agent-zero`.
 - **Look before you build; most of it exists:**
   - UI: `ui-pick`

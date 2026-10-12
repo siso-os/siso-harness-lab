@@ -1,32 +1,59 @@
 #!/usr/bin/env python3
-"""heavy: run a CPU- or memory-heavy command in one of N machine-wide slots.
+"""Run heavy work in machine-wide slots, admitting registered waiters in order.
 
-Every agent on this laptop shares 8 cores and 16 GB. On 23 Sep 2026 five agents each
-started tsc, vitest, a build and a Chrome at the same time; load reached 193 and every
-job ran slower than it would have queued. `heavy` queues them instead.
-
-  heavy -- npx tsc -p tsconfig.json --noEmit
-  heavy -- npm run build
-  heavy --status
-  heavy --hold MINUTES "why"   a live test owns this machine: new jobs wait until --release or the hold expires
-  heavy --release
-
-The slot is an flock on a file, so the kernel releases it when the command exits,
-even on a crash or kill -9; a slot can never leak. The command is exec'd, so its exit
-code, signals and output are exactly the command's own.
-
-Env: HEAVY_SLOTS (default 5; raised from 3 on 25 Sep 2026 at Shaan's ask, with several agents queueing), HEAVY_DIR (default ~/.cache/siso-heavy),
-HEAVY_QOS (default utility: the job and its children run below interactive apps on macOS; off or background).
-Also caps vitest at 2 workers unless VITEST_MAX_THREADS / VITEST_MAX_FORKS are set.
+heavy -- COMMAND | heavy --status | heavy --hold MINUTES WHY | heavy --release
+HEAVY_SLOTS initializes a new pool (default 5); later overrides must match it.
+HEAVY_DIR defaults to ~/.cache/siso-heavy; HEAVY_QOS to utility.
+Slot locks survive exec and release when their last inherited descriptor closes.
+Existing processes are never interrupted. Queue entries are kernel-leased files:
+a crashed waiter cannot block the queue, and holds are rechecked at admission.
 """
+import contextlib
 import fcntl
+import json
+import math
 import os
 import sys
 import time
 
-SLOTS = max(1, int(os.environ.get("HEAVY_SLOTS", "5")))
-ROOT = os.environ.get("HEAVY_DIR", os.path.expanduser("~/.cache/siso-heavy"))
+SLOTS = 5
+ROOT = os.path.realpath(os.environ.get("HEAVY_DIR", os.path.expanduser("~/.cache/siso-heavy")))
 SLOT_DIR = os.path.join(ROOT, "slots")
+QUEUE_DIR = os.path.join(ROOT, "queue")
+HOLD = os.path.join(ROOT, "hold")
+LEASE = "SISO_HEAVY_LEASE"
+
+
+def prepare():
+    global SLOTS
+    os.makedirs(SLOT_DIR, exist_ok=True)
+    os.makedirs(QUEUE_DIR, exist_ok=True)
+    with admission_lock():
+        capacity = os.path.join(ROOT, "capacity")
+        requested = os.environ.get("HEAVY_SLOTS")
+        if requested is not None and int(requested) < 1:
+            raise ValueError("HEAVY_SLOTS must be positive")
+        try:
+            with open(capacity) as f:
+                SLOTS = int(f.read())
+        except FileNotFoundError:
+            SLOTS = int(requested or "5")
+            temporary = capacity + f".{os.getpid()}.tmp"
+            with open(temporary, "w") as f:
+                f.write(str(SLOTS))
+            os.replace(temporary, capacity)
+        if SLOTS < 1 or (requested is not None and int(requested) != SLOTS):
+            raise ValueError(f"pool capacity is {SLOTS}; conflicting HEAVY_SLOTS rejected")
+
+
+@contextlib.contextmanager
+def admission_lock():
+    fd = os.open(os.path.join(ROOT, "admission.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
 def slot_path(i):
@@ -58,104 +85,173 @@ def holders():
     return out
 
 
-HOLD = os.path.join(ROOT, "hold")
-
-
 def hold_info():
-    """The live hold as (until_epoch, why), or None. A hold expires by itself, so a crashed holder can't block forever."""
+    """Called under the admission lock, including expiry and renewal."""
     try:
-        until, why = open(HOLD).read().split("\t", 1)
+        with open(HOLD) as f:
+            until, why = f.read().split("\t", 1)
         until = float(until)
-    except (OSError, ValueError):
+        if not math.isfinite(until):
+            raise ValueError
+    except FileNotFoundError:
         return None
+    except (OSError, ValueError):
+        # An unreadable hold must not silently admit work. --release repairs it.
+        return float("inf"), "unreadable hold; use heavy --release"
     if until <= time.time():
-        try:
-            os.remove(HOLD)
-        except OSError:
-            pass
+        os.unlink(HOLD)
         return None
     return until, why.strip()
 
 
-def status():
-    os.makedirs(SLOT_DIR, exist_ok=True)
-    busy = holders()
-    h = hold_info()
-    if h:
-        print(f"HELD until {time.strftime('%H:%M', time.localtime(h[0]))}: {h[1]} (new jobs wait)")
-    print(f"{len(busy)}/{SLOTS} slots busy")
-    for line in busy:
-        print("  " + line)
+def oldest_waiter():
+    """Prune only unlocked leases; PIDs, ages and command names are not liveness."""
+    for name in sorted(n for n in os.listdir(QUEUE_DIR) if n.endswith(".wait")):
+        path = os.path.join(QUEUE_DIR, name)
+        fd = os.open(path, os.O_RDWR)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return name
+            os.unlink(path)
+        finally:
+            os.close(fd)
+    return None
+
+
+def register():
+    with admission_lock():
+        counter = os.path.join(ROOT, "ticket")
+        try:
+            with open(counter) as f:
+                previous = int(f.read())
+        except (OSError, ValueError):
+            previous = 0
+        pending = [int(n[:-5]) for n in os.listdir(QUEUE_DIR) if n[:-5].isdigit() and n.endswith(".wait")]
+        ticket = max([previous, *pending]) + 1
+        name = f"{ticket:020d}.wait"
+        fd = os.open(os.path.join(QUEUE_DIR, name), os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.write(fd, f"pid {os.getpid()} registered {time.time()}\n".encode())
+        with open(counter, "w") as f:
+            f.write(str(ticket))
+        return name, fd
+
+
+def inherited_slot():
+    """Reject nested wrappers: flock cannot portably prove inherited ownership."""
+    raw = os.environ.get(LEASE)
+    if not raw:
+        return None
+    try:
+        lease = json.loads(raw)
+        if lease["root"] != ROOT:
+            return None  # A private fixture or genuinely different resource pool.
+    except (KeyError, TypeError, ValueError, OSError):
+        pass
+    raise ValueError("nested heavy is not supported; run the inner command directly under the existing outer heavy wrapper")
+
+
+def execute(argv, slot, fd):
+    os.set_inheritable(fd, True)
+    os.environ[LEASE] = json.dumps({"root": ROOT, "slot": slot, "fd": fd})
+    os.environ.setdefault("VITEST_MAX_THREADS", "2")
+    os.environ.setdefault("VITEST_MAX_FORKS", "2")
+    os.environ.setdefault("UV_THREADPOOL_SIZE", "2")
+    qos = os.environ.get("HEAVY_QOS", "utility")
+    if qos != "off" and os.path.exists("/usr/sbin/taskpolicy"):
+        argv = ["/usr/sbin/taskpolicy", "-c", qos, *argv]
+    try:
+        os.execvp(argv[0], argv)
+    except OSError as error:
+        print(f"heavy: {argv[0]}: {error.strerror}", file=sys.stderr)
+        return 127
 
 
 def main(argv):
+    try:
+        prepare()
+    except (ValueError, OSError) as error:
+        print(f"heavy: {error}", file=sys.stderr)
+        return 2
     if argv[:1] == ["--status"]:
-        status()
+        with admission_lock():
+            oldest_waiter()
+            busy, hold = holders(), hold_info()
+            waiting = len([n for n in os.listdir(QUEUE_DIR) if n.endswith(".wait")])
+        if hold:
+            print(f"HELD: {hold[1]} (new jobs wait)")
+        print(f"{len(busy)}/{SLOTS} slots busy; {waiting} registered waiters")
+        for line in busy:
+            print("  " + line)
         return 0
-    # 2 Oct 2026: live stream presses on the camera laptop stalled three times at load 13-20 while other lanes'
-    # screenshot walks ran. The streaming test holds the machine; jobs already running finish, new ones wait.
-    if argv[:1] == ["--hold"]:
-        minutes = min(max(float(argv[1]), 1), 180) if len(argv) > 1 else 60
-        os.makedirs(ROOT, exist_ok=True)
-        with open(HOLD, "w") as f:
-            f.write(f"{time.time() + minutes * 60}\t{' '.join(argv[2:]) or 'held'} (pid {os.getppid()})")
-        print(f"heavy: held for {minutes:.0f} min")
-        return 0
-    if argv[:1] == ["--release"]:
-        try:
-            os.remove(HOLD)
-        except OSError:
-            pass
-        print("heavy: released")
+    if argv[:1] in (["--hold"], ["--release"]):
+        with admission_lock():
+            if argv[0] == "--hold":
+                try:
+                    minutes = float(argv[1]) if len(argv) > 1 else 60
+                    if not math.isfinite(minutes):
+                        raise ValueError
+                    minutes = min(max(minutes, 1), 180)
+                except ValueError:
+                    print("heavy: hold duration must be finite minutes", file=sys.stderr)
+                    return 2
+                temporary = HOLD + f".{os.getpid()}.tmp"
+                with open(temporary, "w") as f:
+                    f.write(f"{time.time() + minutes * 60}\t{' '.join(argv[2:]) or 'held'} (pid {os.getppid()})")
+                os.replace(temporary, HOLD)
+                print(f"heavy: held for {minutes:.0f} min")
+            else:
+                try:
+                    os.unlink(HOLD)
+                except FileNotFoundError:
+                    pass
+                print("heavy: released")
         return 0
     if argv[:1] == ["--"]:
         argv = argv[1:]
     if not argv:
         print(__doc__.strip(), file=sys.stderr)
         return 2
-    os.makedirs(SLOT_DIR, exist_ok=True)
-    start, told = time.time(), False
-    held_told = False
-    while (h := hold_info()):
-        if not held_told:
-            print(f"heavy: a live test holds this machine until {time.strftime('%H:%M', time.localtime(h[0]))} ({h[1]}); waiting", file=sys.stderr)
-            held_told = True
-        time.sleep(2)
-    while True:
-        for i in range(SLOTS):
-            fd = try_slot(i)
+    try:
+        inherited_slot()
+    except ValueError as error:
+        print(f"heavy: {error}", file=sys.stderr)
+        return 2
+    start, told = time.monotonic(), False
+    ticket, queue_fd = register()
+    try:
+        while True:
+            with admission_lock():
+                head, hold = oldest_waiter(), hold_info()
+                if head == ticket and not hold:
+                    for slot in range(SLOTS):
+                        fd = try_slot(slot)
+                        if fd is not None:
+                            os.unlink(os.path.join(QUEUE_DIR, ticket))
+                            print(f"heavy: ticket {int(ticket[:-5])} admitted slot {slot} after {time.monotonic()-start:.3f}s pid {os.getpid()}", file=sys.stderr, flush=True)
+                            break
+                    else:
+                        fd = None
+                else:
+                    fd = None
             if fd is not None:
                 break
-        else:
             if not told:
-                print(f"heavy: all {SLOTS} slots busy, waiting:", file=sys.stderr)
-                for line in holders():
-                    print("  " + line, file=sys.stderr)
+                print(f"heavy: ticket {int(ticket[:-5])} waiting for admission pid {os.getpid()}" + (f" ({hold[1]})" if hold else ""), file=sys.stderr, flush=True)
                 told = True
-            time.sleep(0.5)
-            continue
-        break
-    waited = time.time() - start
-    if told:
-        print(f"heavy: got slot {i} after {waited:.0f}s", file=sys.stderr)
-    with open(slot_path(i) + ".info", "w") as f:
-        f.write(f"pid {os.getpid()} since {time.strftime('%H:%M:%S')} in {os.getcwd()}: {' '.join(argv)[:160]}")
-    os.set_inheritable(fd, True)  # the exec'd command holds the slot until it exits
-    os.environ.setdefault("VITEST_MAX_THREADS", "2")
-    os.environ.setdefault("VITEST_MAX_FORKS", "2")
-    os.environ.setdefault("UV_THREADPOOL_SIZE", "2")
-    # Below the apps a person is using: a slot bounds one job, not the processes it forks. On 1 Oct three jobs
-    # (node --test over every file, tsc, vitest) became 30 node processes, load hit 129 and Shaan's live stream
-    # dropped. macOS's utility QoS keeps them (and every child) under the streaming app and the desktop.
-    # HEAVY_QOS=off runs the command as before; HEAVY_QOS=background throttles harder.
-    qos = os.environ.get("HEAVY_QOS", "utility")
-    if qos != "off" and os.path.exists("/usr/sbin/taskpolicy"):
-        argv = ["/usr/sbin/taskpolicy", "-c", qos, *argv]
-    try:
-        os.execvp(argv[0], argv)
-    except OSError as e:
-        print(f"heavy: {argv[0]}: {e.strerror}", file=sys.stderr)
-        return 127
+            time.sleep(0.1)
+    finally:
+        with admission_lock():
+            try:
+                os.unlink(os.path.join(QUEUE_DIR, ticket))
+            except FileNotFoundError:
+                pass
+        os.close(queue_fd)
+    with open(slot_path(slot) + ".info", "w") as f:
+        f.write(f"pid {os.getpid()} since {time.strftime('%H:%M:%S')} in {os.getcwd()}: {os.path.basename(argv[0])}")
+    return execute(argv, slot, fd)
 
 
 if __name__ == "__main__":
