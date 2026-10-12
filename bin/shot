@@ -1,0 +1,17 @@
+#!/bin/bash
+# shot: run a Playwright script on one shared, long-lived Chrome, inside a heavy slot.
+#
+#   shot oracle-worker/src/renderer/_review/customise-shots.mjs after 5622 c2
+#   shot npx tsx some-check.ts
+#
+# The script is unchanged: its chromium.launch() connects to the shared browser instead
+# of starting a new Chrome (see lib/shared-browser.mjs); browser.close() only disconnects.
+# The shared Chrome exits by itself after 10 idle minutes. SHOT_OWN_BROWSER=1 opts out.
+set -euo pipefail
+[ $# -gt 0 ] || { sed -n '2,10p' "$0" >&2; exit 2; }
+here=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd -P)
+export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=file://$here/lib/shared-browser.mjs"
+case "$1" in
+  *.mjs|*.js|*.cjs) exec heavy -- node "$@" ;;
+  *) exec heavy -- "$@" ;;
+esac

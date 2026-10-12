@@ -99,8 +99,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   process.stdin.on("end", () => {
     try {
       const input = JSON.parse(raw || "{}");
-      if (/^(Agent|Task)$/.test(input.tool_name || "")) {
-        process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: glance() } }));
+      // Workflow too (Shaan, 12 Oct: "sometimes opus workflows are needed, it's just they should be justified ... given the
+      // compute constraints"): workflow agents default to Haiku 5.5 (settings CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL); one that
+      // asks for Opus should say why, against these numbers. HALO's six-agent Opus workflow was ~45% of a 4 h window.
+      if (/^(Agent|Task|Workflow)$/.test(input.tool_name || "")) {
+        const why = input.tool_name === "Workflow" ? "\nWorkflow agents run on Haiku 5.5 unless an agent asks for model 'opus'; give each Opus agent a one-line reason (judgement Haiku can't do, priority) and keep the count small." : "";
+        process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: glance() + why } }));
       }
     } catch {}
     process.exit(0);

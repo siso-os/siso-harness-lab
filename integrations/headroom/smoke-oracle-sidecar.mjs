@@ -18,7 +18,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const sidecarScript = path.join(here, "headroom-sidecar.sh");
 const oracleRoot =
   process.env.ORACLE_STREAMING_ROOT ||
-  path.join(os.homedir(), "SISO_Workspace/SISO_Agency/apps/oracle-streaming");
+  path.join(os.homedir(), "SISO_Workspace/SISO_Agency/partners/halo/oracle/core");
 const headroomBin = process.env.HEADROOM_BIN;
 
 assert(

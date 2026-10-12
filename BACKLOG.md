@@ -49,6 +49,41 @@ unblocked item; move it to § Done with the before/after numbers when finished.
 
 ## Done
 
+- 9 Oct: renderer idle candidate5e7de137 filed AGENT-BASE t-0575; headless idle54.76 ->3.08%, live-source restore45.08%,24pose and wake/lifetime checks pass. Native/whole-app target remains open. Evidence `.agents/runs/2026-10-09-face-sleep/RETURN.json`.
+
+- 9 Oct: closed-transcript retention candidate7e54bf84 filed to AGENT-BASE t-0572; synthetic heap down98.986%/99.289%, continuity checks pass. Whole-app/live gate remains open. Evidence `.agents/runs/2026-10-09-app-weight/README.md`.
+
+- 9 Oct: role admission candidate a2edde5 verified (busy4 ->0; four concurrent callers ->1; six tests). A0 integration t-0568 pending; no live savings claim. Evidence `.agents/runs/2026-10-09-role-admission/README.md`.
+
+### 9 Oct Autonomous task attribution source and meter delivered
+
+Explicit Codex-child task ID retained through validated workspace/host/activity; observed run usage keeps failed/cancelled attempts and unknown baselines. Meter installed; source aacbf035 awaits live integration in t-0566. 13 consumer checks plus host fixtures/typecheck and 3-attempt producer-consumer proof. Evidence `.agents/runs/2026-10-09-task-attribution/RETURN.json`.
+
+
+### 8 Oct Hosted capacity/usage snapshot and delta tool delivered
+
+8/8checks plus live producer/consumer evidence; stale PID and duplicate records excluded, unmatched/reset usage explicit. Tokens/landed change remains undefined until owner task/accepted-live linkage exists. Evidence `.agents/runs/2026-10-08-efficiency-ongoing/HOST-COVERAGE.md`.
+
+
+
+### 8 Oct Efficiency batch implementation and isolated verification complete
+
+Machine heavy installed9/9pass. Pushed Agent Base c2fa68e4: duplicate/typecheck/build/worker/setup waste reductions, measured55.892→12.193s typechecks and466.6→365.5MiB test workers; checked-artifact handoff validated. Owner t-0536 supersedes t-0531; LIVE ACCEPTANCE REMAINS OPEN. Token share75.0635%unchanged, capacity not proved. Evidence `.agents/runs/2026-10-08-efficiency-ongoing/RETURN.json`; next work in PLAN.
+
+
+
+### 8 Oct Efficiency redesign completed; candidate awaiting owner integration
+
+Role e9543ec installed; baseline/continuation contract and PLAN replaced. Candidate3f6a68ca measured172.18→91.80s with22 identical assets; live acceptance remains OPEN as AB-ASTRA taskt-0531. Primary share75.0635% unchanged; next queue fairness/coverage steps in PLAN. Evidence: `.agents/runs/2026-10-08-efficiency-owner/RETURN.json`.
+
+
+
+6Oct runtime-owner accepted candidates (programme remains active):
+- Host source/isolated DEV ae710bb3:32→1 burst and50→18 lifecycle spawns;16parity checks. Natural-cadence/main/live gate remains open.
+- Native isolation experiment9f275678:91.999→56.199MiB,6→4processes,MCP2→2;51artifact checks. Global pooling rejected pending native active/crash isolation.
+Evidence:.agents/runs/2026-10-06-runtime-upgrade/RETURN.json
+
+
 | Date | Item | Before → after | Evidence |
 |---|---|---|---|
 | 2026-10-06 | Serena demand startup installed for future laptop Codex boots | Unused charge147.455→17.505MiB; native full tree295.291→165.637MiB;24tools/9MCPs and real independent edits retained;11tests;67PIDs remain; active overhead disclosed | `reports/2026-10-05-serena-lazy/RESULT.json` |
@@ -85,3 +120,6 @@ unblocked item; move it to § Done with the before/after numbers when finished.
 | 2026-09-04 | Phone path built: `claude-phone` isolated profile, `console-to-telegram` bridge; Shaan's original `claude-direct` restored after a worker overwrote it | dry-run pass; claude-direct 23.0k turn-1 | `10-phone-path.md` |
 | 2026-09-04 | Handoff corrected: 99-turn "Fable" session was gpt-5.6-sol | — | `13-codex.md` #1 |
 | 2026-09-03 | Global skills 35→11, Codex 44→12, agents 6→2, hooks 1→16, brain trimmed, console built | home turn-1 39.7k → 39.1k | `00-HANDOFF.md`, `07-second-pass-changes.md` |
+- [2026-09-06 oracle-fleet-token-waste](docs/lessons/2026-09-06-oracle-fleet-token-waste.md) — 75 Astra seat-hours to zero landings under an absolute gate + human holds + reviewer; 15 seat-hours to 44 landings after the rules changed; the eight causes and the rules that fixed it
+
+- [ ] **SessionStart = routing + one telemetry line** (commits landed today, oldest open lane age, worktree count, gate status); anything longer is a page on the docs path. Source: siso-project-team/docs/lessons-from-oracle.html §6 item 6, filed 2026-09-11 by the Labs first mate.

@@ -1,0 +1,26 @@
+#!/bin/bash
+# tsc-inc: type-check with an incremental cache, inside a heavy slot.
+#
+#   tsc-inc                      # tsc -p tsconfig.json --noEmit
+#   tsc-inc -p tsconfig.web.json
+#
+# A plain `tsc --noEmit` re-checks the whole project every time (~900 MB, minutes under
+# load). The cache makes a re-check cost only what changed. One cache per tsconfig path,
+# kept outside the repo in ~/.cache/siso-heavy/tsc, so worktrees sharing a node_modules
+# never share a cache and nothing needs gitignoring.
+set -euo pipefail
+project=tsconfig.json
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p|--project) project="$2"; shift 2 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+[ -e "$project" ] || { echo "tsc-inc: no $project in $PWD" >&2; exit 2; }
+abs=$(cd "$(dirname "$project")" && pwd -P)/$(basename "$project")
+cache="${HEAVY_DIR:-$HOME/.cache/siso-heavy}/tsc"
+mkdir -p "$cache"
+key=$(printf '%s' "$abs" | shasum | cut -c1-16)
+exec heavy -- npx --no-install tsc -p "$project" --noEmit --incremental \
+  --tsBuildInfoFile "$cache/$key.tsbuildinfo" ${args[@]+"${args[@]}"}

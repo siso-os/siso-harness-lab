@@ -75,45 +75,44 @@ def scan(day):
             parent = os.path.join(os.path.dirname(os.path.dirname(f)) + ".jsonl") if sub else f
             seen = seen_all if not sub else set()
             with open(f, errors="replace") as fh:
-                lines = fh.readlines()
-            for line in lines:
-                try:
-                    d = json.loads(line)
-                except ValueError:
-                    continue
-                nm = d.get("agentName") or d.get("customTitle")
-                if nm:
-                    NAMES.setdefault(parent if sub else f, nm)
-                ts = d.get("timestamp")
-                if not ts or day_of(ts) != day:
-                    continue
-                a = agents[(parent if sub else f)]
-                if d.get("type") == "user":
-                    t = text_of(d.get("message"))
-                    if "Stop hook feedback" in t or "stop hook" in t.lower() and "blocking" in t.lower():
-                        a["rework"] += 1
-                    elif "task-notification" in t or "Monitor event" in t or "SYSTEM NOTIFICATION" in t:
-                        a["wakes"] += 1
-                elif d.get("type") == "assistant":
-                    m = d.get("message") or {}
-                    if m.get("id") in seen:
+                for line in fh:
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
                         continue
-                    seen.add(m.get("id"))
-                    u = m.get("usage") or {}
-                    inp, cw, cr, out = (u.get(k, 0) for k in (
-                        "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"))
-                    p = PRICE[family(m.get("model"))]
-                    a["steps"] += 1
-                    a["ctx"] += inp + cw + cr
-                    a["cr_w"] += cr * p[2] / 1e6
-                    a["cw_w"] += cw * p[1] / 1e6
-                    a["out_w"] += out * p[3] / 1e6
-                    a["in_w"] += inp * p[0] / 1e6
-                    if sub:
-                        a["sub_steps"] += 1
-                    else:
-                        a["main_steps"] += 1
-                        a["main_ctx"] += inp + cw + cr
+                    nm = d.get("agentName") or d.get("customTitle")
+                    if nm:
+                        NAMES.setdefault(parent if sub else f, nm)
+                    ts = d.get("timestamp")
+                    if not ts or day_of(ts) != day:
+                        continue
+                    a = agents[(parent if sub else f)]
+                    if d.get("type") == "user":
+                        t = text_of(d.get("message"))
+                        if "Stop hook feedback" in t or "stop hook" in t.lower() and "blocking" in t.lower():
+                            a["rework"] += 1
+                        elif "task-notification" in t or "Monitor event" in t or "SYSTEM NOTIFICATION" in t:
+                            a["wakes"] += 1
+                    elif d.get("type") == "assistant":
+                        m = d.get("message") or {}
+                        if m.get("id") in seen:
+                            continue
+                        seen.add(m.get("id"))
+                        u = m.get("usage") or {}
+                        inp, cw, cr, out = (u.get(k, 0) for k in (
+                            "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"))
+                        p = PRICE[family(m.get("model"))]
+                        a["steps"] += 1
+                        a["ctx"] += inp + cw + cr
+                        a["cr_w"] += cr * p[2] / 1e6
+                        a["cw_w"] += cw * p[1] / 1e6
+                        a["out_w"] += out * p[3] / 1e6
+                        a["in_w"] += inp * p[0] / 1e6
+                        if sub:
+                            a["sub_steps"] += 1
+                        else:
+                            a["main_steps"] += 1
+                            a["main_ctx"] += inp + cw + cr
     return agents
 
 

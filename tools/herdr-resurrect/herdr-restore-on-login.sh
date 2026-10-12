@@ -41,6 +41,10 @@ fi
 # Give herdr a moment to finish spawning restored bare-shell panes.
 sleep 5
 
+# Agent Base owners first (8 Oct 2026): each back under siso-host in its own pane, on its own login and session,
+# replacing any plain `claude --resume` herdr started there on the server's login. Then herdr-restore skips their sessions.
+"$HOME/SISO_Workspace/SISO_Agents/agent-zero/siso-agent-zero/bin/owners-revive" >> "$LOG" 2>&1 || true
+
 # GUARD: how many desired-agent panes are still bare (eligible)? If zero, either
 # the session was never populated this boot yet, or agents are already alive.
 GUARD=$("$NODE" "$RESTORE" --dry-run 2>/dev/null | grep -c '^\[herdr-restore\] DRY:')

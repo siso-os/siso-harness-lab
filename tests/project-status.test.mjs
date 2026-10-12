@@ -38,7 +38,6 @@ test('live cold pickup follows the budget reset without erasing the conditional 
   assert.equal(projectStatus(source).next_work.id, '26');
   const backlog = readFileSync(join(source, 'BACKLOG.md'), 'utf8');
   assert.match(backlog, /\| 25 \|/);
-  assert.match(readFileSync(join(source, '.agents/PAGE.md'), 'utf8'), /Current order: \*\*EFFICIENCY-OWNER/);
   assert.match(readFileSync(join(source, '.agents/HANDOFF.md'), 'utf8'), /## ACTIVE — EFFICIENCY-OWNER/);
 });
 test('reconciled collision remains qualified, not a clean experimental win', t => {

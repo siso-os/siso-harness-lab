@@ -152,7 +152,7 @@ test("siso-task start/stop write marks for this Claude session; a bad alloc is r
 test("codex-run --task: the brief starts TASK:, the thread is marked, the log row carries task, alloc and thread", () => {
   const { home } = fixture();
   const fake = path.join(home, "codex-bin");
-  writeFileSync(fake, `#!/bin/sh\nfor a; do last="$a"; done\nprintf '%s' "$last" > "${home}/brief.txt"\necho "$SISO_TASK" > "${home}/env.txt"\n` +
+  writeFileSync(fake, `#!/bin/sh\ncase " $* " in *" mcp list --json "*) echo '[]'; exit 0;; esac\nfor a; do last="$a"; done\nprintf '%s' "$last" > "${home}/brief.txt"\necho "$SISO_TASK" > "${home}/env.txt"\n` +
     `while [ "$1" != "-o" ]; do shift; done\nprintf 'RETURN\\nSTATUS: done - ok\\n' > "$2"\n` +
     `echo '{"type":"thread.started","thread_id":"th-9"}'\necho '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}'\n`, { mode: 0o755 });
   const env = { ...process.env, CODEX_BIN: fake, CODEX_RUN_STATE: path.join(home, "cr"), SISO_TASK_STATE: path.join(home, "task") };

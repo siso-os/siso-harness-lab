@@ -85,14 +85,17 @@ test("task boundary: asks to compact only above 100k", () => {
   const c = config({});
   const done = bash(`echo "x: DONE" >> ${inbox}`);
   assert.equal(boundaryText(done, 90_000, c), null);
-  assert.match(boundaryText(done, 180_000, c), /finished task at 180k tokens\. Compact now/);
+  assert.match(boundaryText(done, 180_000, c), /finished a task at 180k tokens[\s\S]*seat-fresh/);
   assert.equal(boundaryText(bash("ls"), 500_000, c), null);
+  assert.match(boundaryText({ tool_name: "Edit", tool_input: { file_path: "/r/.agents/HANDOFF.md" } }, 200_000, c), /seat-fresh/);
+  assert.equal(boundaryText({ tool_name: "Edit", tool_input: { file_path: "/r/.agents/HANDOFF.md" } }, 120_000, c), null);
+  assert.equal(boundaryText({ tool_name: "Edit", tool_input: { file_path: "/r/README.md" } }, 500_000, c), null);
 });
 
 test("run: the boundary line rides alongside (or without) the token pings", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "cping-"));
   mkdirSync(path.join(dir, "ctx"), { recursive: true });
-  const env = { CONTEXT_PING_STATE: dir };
+  const env = { CONTEXT_PING_STATE: dir, CONTEXT_PING_FRESH: "100000" };
   const done = { session_id: "s2", ...bash(`echo "x: DONE" >> ${inbox}`) };
   writeFileSync(path.join(dir, "ctx", "s2.json"), JSON.stringify({ used_percentage: 11, context_window_size: 1_000_000 }));
   assert.match(run(done, env), /^Task boundary/);              // 110k: under the 120k token line, boundary only

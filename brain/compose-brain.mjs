@@ -22,7 +22,7 @@ const CORE = path.join(here, "WORKING-WITH-SHAAN.core.md");
 const ESTATE = path.join(here, "estate.md");
 
 const TARGETS = [
-  { tool: "claude", shell: path.join(here, "claude.shell.md"), out: path.join(HOME, ".claude/CLAUDE.md"), maxShellBytes: 700 },
+  { tool: "claude", shell: path.join(here, "claude.shell.md"), out: path.join(HOME, ".claude/CLAUDE.md"), maxShellBytes: 900 }, // +200: compact instructions (Anthropic: CLAUDE.md steers compaction), 12 Oct
   { tool: "codex", shell: path.join(here, "codex.shell.md"), out: path.join(HOME, ".codex/AGENTS.md"), maxShellBytes: 700 },
   // omp (oh-my-pi) loads ~/.omp/agent/AGENTS.md as global context (marker-tested 2026-09-23); it reads
   // neither ~/.claude/CLAUDE.md nor ~/.codex/AGENTS.md. Its skills come from ~/.claude/skills.

@@ -41,7 +41,7 @@
  * snapshot-only (used by the reboot test where session.json was scrubbed).
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -152,7 +152,19 @@ function main() {
 
   let restored = 0, skipped = 0, unmatched = 0;
 
+  // 8 Oct 2026: herdr's session file can bind an Agent Base owner's session to an old pane too. A session that an
+  // Agent Base host serves (or is about to: Agent Zero's owners-revive runs first) is the host's, never a second plain
+  // `claude --resume` (that made ESTATE run twice after the 18:51 hard reset).
+  const HOSTS = join(homedir(), '.local/state/agent-base/hosts');
+  const hosted = new Set();
+  try {
+    for (const f of readdirSync(HOSTS)) if (/^w.*_p.*\.json$/.test(f)) {
+      try { const h = JSON.parse(readFileSync(join(HOSTS, f), 'utf8')); if (h.session) hosted.add(h.session); } catch {}
+    }
+  } catch {}
+
   for (const d of want) {
+    if (hosted.has(d.uuid)) { skipped++; vlog(`SKIP ${d.agent}:${d.uuid} — an Agent Base host owns this session`); continue; }
     const liveTabs = live.get(d.wsId);
     if (!liveTabs) { unmatched++; vlog(`UNMATCHED workspace ${d.wsId} (${d.wsLabel}) for ${d.agent}:${d.uuid}`); continue; }
 
