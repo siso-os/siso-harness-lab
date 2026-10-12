@@ -33,6 +33,8 @@ def price(model, ctx=0):
 
 # harness-bench's own runs (scripts/harness-bench.py prompts) are measurement, not work: leave them out
 BENCH = ("Do not edit anything.", "add a --top N option", "say hi")
+# Bash that only reads (same rule as hooks/fetch-nudge.mjs, 13 Oct): the strict "reading loops" measure.
+READ_CMD = re.compile(r"^\s*(cd [^;&|]+(&&|;)\s*)?(cat|head|tail|sed -n|grep|rg|ugrep|ls|find|fd|wc|git (log|show|diff|status|grep|blame)|jq|awk|tree|stat|file)\b")
 FETCH = {"Read", "Grep", "Glob", "Bash", "WebFetch", "WebSearch", "LSP", "ToolSearch", "TaskOutput"}
 
 
@@ -88,7 +90,7 @@ def main():
     raw = defaultdict(float)
     tool_tok, tool_carry, tool_calls = defaultdict(float), defaultdict(float), defaultdict(int)
     reread_tok, reread_n, shaan_req, calls = 0.0, 0, 0, 0
-    fetch_loop = {"usd": 0.0, "runs": 0}
+    loops = {"fetch": {"usd": 0.0, "runs": 0}, "read": {"usd": 0.0, "runs": 0}}
     asked = set()
     big = defaultdict(float)
     seen = set()
@@ -98,7 +100,7 @@ def main():
         if sub and f.split("/subagents/")[0].rsplit("/", 1)[-1] in skipped:
             continue
         cur = "sub-agent" if sub else "Shaan"
-        names, reads, toolsof, seq = {}, {}, defaultdict(set), []
+        names, reads, toolsof, seq, acts = {}, {}, defaultdict(set), [], set()
         shaan_seen = False
         pending = []  # tool results awaiting later calls: [tokens, tool, cost-per-token-of-read]
         try:
@@ -153,6 +155,8 @@ def main():
                         inp = b.get("input") or {}
                         names[b.get("id")] = (b.get("name", "?"), inp.get("file_path") if isinstance(inp, dict) else None)
                         toolsof[mid].add(b.get("name", "?"))
+                        if b.get("name") == "Bash" and not READ_CMD.match(str(inp.get("command", "")) if isinstance(inp, dict) else ""):
+                            acts.add(mid)  # a Bash that builds, deploys, commits or messages: work, not fetching
             if not mid or mid in seen:
                 continue
             seen.add(mid)
@@ -186,16 +190,18 @@ def main():
             big[">300k" if ctx > 300_000 else ">150k" if ctx > 150_000 else "<=150k"] += usd
             raw["tokens"] += ctx + out
             raw["usd"] += usd
-        # Opus/Fable calls that only fetch (read, search, run a command), in runs of 3+: the bulk work Haiku 5.5 should do
-        run = []
-        for mid, usd, model in seq + [(None, 0, "")]:
-            if mid and toolsof[mid] and toolsof[mid] <= FETCH and ("opus" in model or "fable" in model):
-                run.append(usd)
-                continue
-            if len(run) >= 3:
-                fetch_loop["usd"] += sum(run)
-                fetch_loop["runs"] += 1
+        # Opus/Fable calls that only fetch (read, search, run a command), in runs of 3+: the bulk work Haiku 5.5 should do.
+        # "fetch" counts every Bash (comparable with 12-13 Oct); "read" counts only Bash that reads (the honest measure).
+        for key, ok in (("fetch", lambda m: True), ("read", lambda m: m not in acts)):
             run = []
+            for mid, usd, model in seq + [(None, 0, "")]:
+                if mid and toolsof[mid] and toolsof[mid] <= FETCH and ok(mid) and ("opus" in model or "fable" in model):
+                    run.append(usd)
+                    continue
+                if len(run) >= 3:
+                    loops[key]["usd"] += sum(run)
+                    loops[key]["runs"] += 1
+                run = []
 
     total = raw["usd"] or 1
     res = {"hours": a.hours, "files": len(files), "calls": calls, "raw_tokens": raw["tokens"], "usd": round(raw["usd"], 2),
@@ -207,7 +213,8 @@ def main():
            "tool_calls": dict(sorted(tool_calls.items(), key=lambda kv: -kv[1])[:12]),
            "tool_carry_share": {k: round(v / total, 4) for k, v in sorted(tool_carry.items(), key=lambda kv: -kv[1])[:12]},
            "reread": {"reads": reread_n, "tokens": int(reread_tok)},
-           "opus_fetch_loops": {"runs": fetch_loop["runs"], "share": round(fetch_loop["usd"] / total, 4)}}
+           "opus_fetch_loops": {"runs": loops["fetch"]["runs"], "share": round(loops["fetch"]["usd"] / total, 4)},
+           "opus_read_loops": {"runs": loops["read"]["runs"], "share": round(loops["read"]["usd"] / total, 4)}}
     if a.json:
         json.dump(res, open(a.json, "w"), indent=1)
     print(f"{a.hours:g}h: {calls} calls in {len(files)} transcripts, {raw['tokens'] / 1e6:.0f}M tokens, ${raw['usd']:.0f} at list price")
@@ -217,7 +224,8 @@ def main():
     print("  context", ", ".join(f"{k} {v:.0%}" for k, v in res["context_band"].items()))
     print("  carrying tool output", ", ".join(f"{k} {v:.0%}" for k, v in list(res["tool_carry_share"].items())[:6]))
     print(f"  files read again {reread_n}x ({reread_tok / 1e3:.0f}k tokens)")
-    print(f"  Opus fetch loops (3+ fetch-only calls in a row): {fetch_loop['runs']} runs, {res['opus_fetch_loops']['share']:.0%} of cost (Haiku 5.5's job)")
+    print(f"  Opus fetch loops (3+ fetch-only calls in a row, any Bash): {loops['fetch']['runs']} runs, {res['opus_fetch_loops']['share']:.0%} of cost")
+    print(f"  Opus reading loops (same, Bash only when it reads): {loops['read']['runs']} runs, {res['opus_read_loops']['share']:.0%} of cost (Haiku 5.5's job)")
 
 
 if __name__ == "__main__":
