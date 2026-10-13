@@ -5,7 +5,7 @@
 // Why: Opus fetching for itself was 70% of list-price spend over 72 h (scripts/token-where.py, 12 Oct); the lean
 // prompt alone moved it only 9-16%. Measure with token-where's "Opus fetch loops" line before and after.
 // Second stage (PreToolUse, same file, 13 Oct): the nudge alone moved little (49 nudges in 6 h, the next call was a
-// sub-agent 3 times in 25), so the 6th fetch in a row is turned back once with the same advice; repeating the call goes
+// sub-agent 3 times in 25), so the 4th fetch in a row (6th until 14 Oct) is turned back once with the same advice; repeating the call goes
 // through, so it never stops work (the read-gate pattern, which Haiku and Opus both followed). At most once per 20 fetches.
 // Any error prints nothing. FETCH_NUDGE=0 turns both off; FETCH_TURNBACK=0 only the second. State: ~/.local/state/fetch-nudge/<session>.json
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 export const FETCH = new Set(["Read", "Grep", "Glob", "Bash", "WebFetch", "WebSearch", "LSP"]);
-export const AT = 3, GAP_MS = 10 * 60_000, EVERY = 15, BACK_AT = 6, BACK_EVERY = 20;
+export const AT = 3, GAP_MS = 10 * 60_000, EVERY = 15, BACK_AT = 4, BACK_EVERY = 20; // BACK_AT 6 -> 4 on 14 Oct: reading loops 8% in the 20 h after the restarts (line was 5%)
 export const TEXT = "You have made 3 read/search/command calls in a row yourself. If more digging is needed, give it to the " +
   "scout agent (Haiku 5.5, ~40x cheaper per token; or any sub-agent with model haiku) as one precise question asking for " +
   "a short answer with file:line, and work from its return; several questions go to several scouts in one message " +
@@ -35,9 +35,10 @@ export function step(prev, input, now = Date.now()) {
   return { state: s, nudge };
 }
 
-export const BACK = "This would be your 6th read/search/command call in a row. Hand the rest of this digging to a Haiku " +
+export const BACK = "This would be your 4th read/search call in a row. Hand the rest of this digging to a Haiku " +
   "sub-agent now (Agent tool: scout if listed, else general-purpose with model haiku) as one precise question asking for a " +
-  "short answer with file:line, and work from its return. If this one call is all you still need, repeat it and it will go through.";
+  "short answer with file:line, and work from its return; several questions go to several scouts in one message (skill " +
+  "haiku-leverage). If this one call is all you still need, repeat it and it will go through.";
 
 // Pure (PreToolUse): turn this call back? Only the BACK_AT-th fetch of a live run, once per run, at most once per BACK_EVERY fetches.
 export function turnback(state, input, now = Date.now()) {
