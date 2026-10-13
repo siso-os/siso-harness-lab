@@ -17,7 +17,7 @@ token: Opus builds and reasons; the Haiku 5.5 agents gather its context and run 
   (`node brain/compose-brain.mjs`; `--check` enforces byte budgets and that every routed skill and path exists). Edit the
   source, never the output.
 - **Hooks** (`hooks/`, registered in both `~/.claude/settings.json` and `~/.config/claude-siso-3/settings.json`):
-  fetch-nudge (3rd fetch in a row -> hand it to scout), test-filter (test runs show the end, or the failures; full log
+  fetch-nudge (3rd read in a row -> hand it to scout; the 4th is turned back once), test-filter (test runs show the end, or the failures; full log
   to a file), read-gate (first whole read of a >=32 KB file -> window, grep or scout), after-compact (git + HANDOFF
   after a compaction), context-ping (informing pings by context size; a finished task over 150k is pointed at
   A0's `seat-fresh`: HANDOFF, then a new conversation), spend-glance, estate-guard. Each has an off
