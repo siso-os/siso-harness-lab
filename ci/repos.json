@@ -1,0 +1,137 @@
+{
+  "sisodias/siso-code": {
+    "setup": "pnpm install --frozen-lockfile --prefer-offline",
+    "test": "pnpm exec vp test run",
+    "mode": "all",
+    "why": "PR gate runs only the tests the diff touches (vitest --changed against the merge-base); docs-only diffs pass at once; the lockfile or root config runs the full suite. Shaan, 17 Oct: \"we don't even need to do these checks\". Main is never run with --changed.",
+    "sharding": {
+      "count": 2,
+      "min_files": 100,
+      "test_glob": "**/*.test.ts"
+    },
+    "affected": {
+      "changed": "pnpm exec vp test run --changed \"$SISO_CI_BASE\" --passWithNoTests",
+      "ignore": [
+        "*.md",
+        "docs/*",
+        "docs/**",
+        "reports/*",
+        "research/*",
+        "*.txt",
+        "LICENSE",
+        ".agents/*",
+        "_archive/*"
+      ],
+      "shared": [
+        "pnpm-lock.yaml",
+        "package.json",
+        "pnpm-workspace.yaml",
+        "vite.config.*",
+        "vitest.config.*",
+        "tsconfig.base.json"
+      ]
+    }
+  },
+  "sisodias/siso-harness-lab": {
+    "setup": "",
+    "test": "npm test",
+    "mode": "new-failures",
+    "why": "npm test; some suites for other tools already fail on main, so only new failures turn it red",
+    "affected": {
+      "command": "node --test",
+      "test_globs": [
+        "tests/*.test.mjs",
+        "tests/test_audit.py"
+      ],
+      "shared": [
+        "brain/*",
+        "package.json",
+        "tests/fixtures/*"
+      ],
+      "rules": [
+        {
+          "paths": [
+            "hooks/test-filter.mjs",
+            "tests/test-filter.test.mjs"
+          ],
+          "tests": [
+            "tests/test-filter.test.mjs"
+          ]
+        },
+        {
+          "paths": [
+            "hooks/read-gate.mjs",
+            "tests/read-gate.test.mjs"
+          ],
+          "tests": [
+            "tests/read-gate.test.mjs"
+          ]
+        }
+      ],
+      "ignore": [
+        "*.md",
+        "docs/*",
+        "docs/**",
+        "reports/*",
+        "research/*",
+        "*.txt",
+        "LICENSE",
+        ".agents/*",
+        "_archive/*",
+        "site/*",
+        "tokens/*.md"
+      ],
+      "self": true,
+      "by_name": true,
+      "unmapped": "skip"
+    }
+  },
+  "sisodias/siso-internal-labs-agent-base": {
+    "setup": "pnpm install --frozen-lockfile --prefer-offline",
+    "test": "node services/node/test/check.mjs",
+    "mode": "new-failures",
+    "why": "Agent Base's own check script: typechecks, web build, unit tests, node and host checks; 37 unit tests already fail on main (15 Oct), so only new failures turn it red",
+    "affected": {
+      "ignore": [
+        "*.md",
+        "docs/*",
+        "docs/**",
+        "reports/*",
+        "research/*",
+        "*.txt",
+        "LICENSE",
+        ".agents/*",
+        "_archive/*"
+      ]
+    }
+  },
+  "sisodias/siso-agent-zero": {
+    "setup": "",
+    "test": "node --test tests/*.test.mjs && python3 -B -m unittest discover -s tests -p 'test_*.py'",
+    "mode": "new-failures",
+    "why": "Agent Zero's node and python tests",
+    "affected": {
+      "ignore": [
+        "*.md",
+        "docs/*",
+        "docs/**",
+        "reports/*",
+        "research/*",
+        "*.txt",
+        "LICENSE",
+        ".agents/*",
+        "_archive/*"
+      ]
+    }
+  },
+  "sisodias/siso": {
+    "setup": "",
+    "test": "sh bin/check",
+    "mode": "all",
+    "branches": [
+      "main"
+    ],
+    "revert": true,
+    "why": "monorepo (kit/): after every push to main run bin/check, post siso-ci on the commit, and on red revert it and tell the CODEOWNERS owner; no GitHub Actions needed (billing)"
+  }
+}

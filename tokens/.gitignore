@@ -1,0 +1,4 @@
+data/last24.*
+data/err.txt
+data/daily.log
+__pycache__/

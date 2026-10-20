@@ -30,6 +30,7 @@ class Heavy(unittest.TestCase):
         self.err = self.errpath.open("w")
         self.env = {**os.environ, "HEAVY_DIR": str(self.root), "HEAVY_SLOTS": "1", "HEAVY_QOS": "off"}
         self.env.pop("SISO_HEAVY_LEASE", None)
+        self.env.pop("HEAVY_CLASS", None)
         self.children = []
 
     def tearDown(self):
@@ -79,12 +80,29 @@ class Heavy(unittest.TestCase):
         self.assertEqual(r.returncode, expected, r.stdout + r.stderr)
         return r
 
+    def test_help_fast_path_ignores_pool_and_class(self):
+        for i, args in enumerate((["--help"], ["-h"], ["--class", "quick", "--help"],
+                                  ["--class", "quick", "-h"])):
+            root = self.root / f"help-{i}"
+            env = {**self.env, "HEAVY_DIR": str(root), "HEAVY_SLOTS": "invalid"}
+            started = time.monotonic()
+            r = sp.run([sys.executable, "-B", SOURCE, *args], env=env,
+                       capture_output=True, text=True, timeout=1)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("heavy --class quick --on mini --cwd /absolute/remote/worktree -- pytest -q", r.stdout)
+            self.assertLess(time.monotonic() - started, 1)
+            self.assertFalse(root.exists(), "help created a pool or queue")
+
+        payload = self.launch(["--help"])
+        out = self.done(payload, 127)
+        self.assertNotIn("Usage:", out)
+
     def test_fifo_and_capacity(self):
         for slots in (1, 2):
             if slots == 2:
                 # Distinct pool: capacity belongs to the root, not the caller.
                 self.env["HEAVY_DIR"] = str(self.root / "second")
-                self.env["HEAVY_SLOTS"] = "2"
+                self.env["HEAVY_SLOTS"] = "3"  # Two bulk slots plus the quick reserve.
                 (self.root / "go").unlink()
             first = [self.job(f"{slots}-block-{i}", gated=True) for i in range(slots)]
             for i in range(slots):
@@ -140,6 +158,16 @@ m=runpy.run_path(sys.argv[1]);m['prepare']();m['register']()
         self.done(self.launch([str(self.root / "nonexistent-command")]), 127)
         self.done(self.job("next"))
 
+    def test_timeout_ends_hung_job_and_frees_slot(self):
+        env = {**self.env, "HEAVY_TIMEOUT": "0.005"}  # 0.3 s
+        start = time.monotonic()
+        self.done(self.job("hung", duration=30, env=env), -15)
+        self.assertLess(time.monotonic() - start, 5)
+        self.done(self.job("next"))
+
+    def test_timeout_zero_never_kills(self):
+        self.done(self.job("slow", duration=.5, env={**self.env, "HEAVY_TIMEOUT": "0"}))
+
     def test_nested_wrappers_fail_fast_with_and_without_fd(self):
         for close in (False, True):
             code = f"""import subprocess,sys
@@ -184,6 +212,43 @@ print(r.stderr,end='');sys.exit(r.returncode)
         (self.root / "queue/00000000000000000001.wait").write_text("dead lease")
         self.done(self.job("ready"))
         self.assertEqual(list((self.root / "queue").glob("*.wait")), [])
+
+    def overflow_env(self, **kw):
+        return {**self.env, "HEAVY_OVERFLOW_AFTER": "0.3", "HEAVY_OVERFLOW_LOAD": "100000",
+                "HEAVY_OVERFLOW_MEM": "0", **kw}
+
+    def test_overflow_admits_first_waiter_when_machine_has_room(self):
+        env = self.overflow_env()
+        blocker = self.job("blocker", gated=True, env=env)
+        self.started("blocker")
+        started = time.monotonic()
+        waiter = self.job("overflow", .02, env=env)
+        self.started("overflow")
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertIn("overflow", self.control("--status").stdout)
+        (self.root / "go").touch()
+        self.done(waiter)
+        self.done(blocker)
+        rows = [json.loads(l) for l in (self.root / "waits.jsonl").read_text().splitlines()]
+        self.assertEqual([r["overflow"] for r in rows], [False, True])
+        self.assertGreaterEqual(rows[1]["wait"], 0.3)
+
+    def test_overflow_waits_in_line_and_obeys_load_and_off_switch(self):
+        for label, extra in (("busy", {"HEAVY_OVERFLOW_LOAD": "0"}), ("off", {"HEAVY_OVERFLOW_SLOTS": "0"})):
+            (self.root / "go").unlink(missing_ok=True)
+            env = self.overflow_env(**extra)
+            blocker = self.job(f"{label}-blocker", gated=True, env=env)
+            self.started(f"{label}-blocker")
+            first = self.job(f"{label}-first", .02, env=env)
+            self.waiting(first)
+            second = self.job(f"{label}-second", .02, env=env)
+            time.sleep(1.0)
+            self.assertFalse(any(e[0] in (f"{label}-first", f"{label}-second") for e in self.events()))
+            (self.root / "go").touch()
+            for p in (blocker, first, second):
+                self.done(p)
+            order = [e[0] for e in self.events() if e[1] == "start" and e[0].startswith(label)]
+            self.assertEqual(order, [f"{label}-blocker", f"{label}-first", f"{label}-second"])
 
 if __name__ == "__main__":
     unittest.main()

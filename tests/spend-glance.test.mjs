@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { glance, window5h } from "../hooks/spend-glance.mjs";
+import { due, glance, window5h } from "../hooks/spend-glance.mjs";
 
 test("spend-glance: window, rate, live Opus chats and laptop in one paragraph; never a refusal", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "glance-"));
@@ -23,4 +23,16 @@ test("spend-glance: window, rate, live Opus chats and laptop in one paragraph; n
   assert.match(text, /not a cap/);
   assert.match(glance({ CONTEXT_PING_STATE: dir + "/none", AB_HOSTS_DIR: dir + "/none" }, now, 1, null), /no fresh 5-hour reading/);
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("spend-glance: once per 10 minutes per session (14 Oct)", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "glance-due-"));
+  const env = { SPEND_GLANCE_STATE: dir };
+  const t = Date.parse("2026-10-14T12:00:00Z");
+  assert.equal(due("s1", env, t), true);
+  assert.equal(due("s1", env, t + 5 * 60_000), false);
+  assert.equal(due("s2", env, t + 5 * 60_000), true);
+  assert.equal(due("s1", env, t + 11 * 60_000), true);
+  assert.equal(due(undefined, env, t), true);
+  rmSync(dir, { recursive: true });
 });

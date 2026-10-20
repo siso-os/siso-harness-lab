@@ -79,11 +79,13 @@ function run(o={}){
   // Before reading stdin, a miss can replace this process with the original
   // server. Unprepared environments then pay no persistent proxy overhead.
   if(!cache&&o.execFallback&&typeof process.execve==='function'){
-    const s=spec(o),python=join(homedir(),'.local/share/uv/tools/serena-agent/bin/python');
+    const s=spec(o);
+    // The shim uses only stdlib; do not depend on a particular Serena venv.
+    // A moved/broken venv interpreter can make execve abort before handoff.
     // Node can leave inherited pipes nonblocking. Python's synchronous stdin
     // reader would interpret EAGAIN as EOF; restore original stdio flags.
     const shim='import os,fcntl,sys\nfor fd in (0,1,2):\n try: fcntl.fcntl(fd,fcntl.F_SETFL,fcntl.fcntl(fd,fcntl.F_GETFL)&~os.O_NONBLOCK)\n except OSError: pass\nos.execv(sys.argv[1],sys.argv[1:])';
-    process.execve(python,[python,'-c',shim,s.command,...s.args],env);
+    process.execve('/usr/bin/env',['env','python3','-c',shim,s.command,...s.args],env);
   }
   let mode='cold',child,init,initialized,pending=[],buffered='',serverBuf='',phase='init',closed=false;
   const inventoryId=`serena-lazy-${randomUUID()}`;

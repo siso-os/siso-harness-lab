@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Idle T3 chats compact themselves (TOKENS). Fill in HOME_DIR, NODE_PATH and NODE_DIR (the folder of NODE_PATH: t3ctl runs on #!/usr/bin/env node), copy to
+     ~/Library/LaunchAgents/com.siso.t3-idle-compact.plist, then: launchctl load -w <that file>
+     Add <string>--dry-run</string> after the script path to watch before it sends anything. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.siso.t3-idle-compact</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>NODE_PATH</string>
+    <string>HOME_DIR/Developer/halo-overnight/tools/t3-idle-compact/t3-idle-compact.mjs</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>NODE_DIR:HOME_DIR/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>StartInterval</key><integer>300</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>HOME_DIR/.local/state/t3-idle-compact.log</string>
+  <key>StandardErrorPath</key><string>HOME_DIR/.local/state/t3-idle-compact.log</string>
+</dict>
+</plist>

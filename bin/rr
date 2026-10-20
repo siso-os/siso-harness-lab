@@ -1,0 +1,17 @@
+#!/bin/sh
+# rr: run several read commands in ONE tool call (Shaan, 14 Oct: "a script ... to do the bash calls in one so it batches them").
+# Each separate Bash call re-reads the whole context; three reads in one call cost one round trip, not three.
+#   rr 'rg -n foo src' 'sed -n 1,40p a.ts' 'git log -3 --oneline'
+# Each command prints under a "=== cmd" header, capped at RR_LINES lines (default 120); a failure prints its exit code
+# and the rest still run. Reads only by convention: the fetch-nudge hook counts rr as a read.
+max="${RR_LINES:-120}"
+[ $# -eq 0 ] && { echo "usage: rr 'cmd1' 'cmd2' ..." >&2; exit 2; }
+for c in "$@"; do
+  printf '=== %s\n' "$c"
+  out=$(sh -c "$c" 2>&1); rc=$?
+  n=$(printf '%s\n' "$out" | wc -l | tr -d ' ')
+  printf '%s\n' "$out" | head -n "$max"
+  [ "$n" -gt "$max" ] && printf '... (%s more lines; narrow the command or raise RR_LINES)\n' "$((n - max))"
+  [ $rc -ne 0 ] && printf '(exit %s)\n' "$rc"
+done
+exit 0

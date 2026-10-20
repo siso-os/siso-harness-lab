@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+"""fleet-check: every seat's state in one call, 0 model tokens.
+
+Agent Zero, 15 Oct: "I did this by hand three times today; make it one command."
+Reads SISO Code's state (read-only), the seat map and the Claude transcripts; prints, per seat, its latest run, how
+long ago, the first line it last said to Shaan, and the problems:
+  STUCK       a run is "running" but nothing (no SISO Code event, no transcript write) for --stuck-min minutes
+  QUEUED      messages queued in a thread with no run going (orphaned: they will never start by themselves)
+  BEHIND      messages queued behind a stuck run
+  STOP/WAIT/OFFER/RULE  the last turn ended on a failures.py class: a stop-short, waiting on someone, an offer to
+              Shaan, an invented rule (see .agents/efficiency/failures.py)
+  PARKED      the last turn said "I'll ... when/once X" and nothing has woken it since (a background job that died,
+              or a go-ahead nobody will send)
+  LONG        a seat thread has at least --long-items turn items (default 800); refresh at its next clean break
+  UNFINISHED  the last turn said "X of Y" with X < Y and the seat has been idle since
+BRAIN is when the seat's Claude process last loaded ~/.claude/CLAUDE.md (+07); * = that text is not today's file (a
+process keeps the brain it started with until SISO Code releases it after 30 min idle, or restarts).
+
+  fleet-check                 every seat
+  fleet-check --seat HALO     one seat, with its last words in full
+  fleet-check --problems      only seats with a problem
+  fleet-check --json          for screens and loops
+"""
+import argparse, datetime as dt, glob, json, os, re, subprocess, sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, os.path.join(HERE, '..', '.agents', 'efficiency'))
+import failures as F  # noqa: E402
+
+DB = os.path.expanduser('~/.local/state/siso-code/userdata/statev2.sqlite')
+SEATS = os.path.expanduser('~/.local/state/agent-base/t3-seats.json')
+PROJECTS = [os.path.expanduser('~/.config/claude-siso-3/projects'), os.path.expanduser('~/.claude/projects')]
+LIVE = ('queued', 'preparing', 'starting', 'running', 'waiting')
+CLASS = {'a': 'STOP', 'b': 'RULE', 'c': 'WAIT', 'd': 'OFFER'}
+XOFY = re.compile(r"\b(\d+) of (\d+)(?= (?:done|built|shipped|landed|live|fixed|complete|steps)\b|\*\*)", re.I)
+WAKE = re.compile(r"\bI'?(?:ll| will)\b[^.\n]{0,80}\b(?:once|when|after|as soon as)\b|\bI'?ll be woken\b", re.I)
+NOW = dt.datetime.now(dt.timezone.utc)
+
+
+def ts(s):
+    return dt.datetime.fromisoformat(s.replace('Z', '+00:00')) if s else None
+
+
+def ago(t):
+    if not t:
+        return '-'
+    m = int((NOW - t).total_seconds() // 60)
+    return f'{m}m' if m < 60 else f'{m // 60}h{m % 60:02d}' if m < 1440 else f'{m // 1440}d{m % 1440 // 60}h'
+
+
+def first_line(text):
+    for line in (text or '').splitlines():
+        line = line.replace('**', '').strip().strip('#> ').strip()
+        if line:
+            return line
+    return ''
+
+
+def transcript(native):
+    if not native:
+        return None
+    for root in PROJECTS:
+        hit = glob.glob(os.path.join(root, '*', native + '.jsonl'))
+        if hit:
+            return hit[0]
+    return None
+
+
+BRAIN = os.path.expanduser('~/.config/claude-siso-3/CLAUDE.md')
+
+
+def norm(text):
+    """Claude Code drops HTML comments (the generated-file banner) when it loads CLAUDE.md; compare without them."""
+    return re.sub(r'<!--.*?-->', '', text, flags=re.S).strip()
+
+
+def brain_loaded(path, brain, budget=64 << 20):
+    """When this transcript's process last loaded the brain (+07), with * if that text differs from today's file."""
+    if not path:
+        return '?'
+    with open(path, 'rb') as f:
+        f.seek(0, 2)
+        end, buf = f.tell(), b''
+        while end > 0 and budget > 0:
+            step = min(4 << 20, end)
+            end -= step
+            budget -= step
+            f.seek(end)
+            lines = (f.read(step) + buf).split(b'\n')
+            buf = lines.pop(0) if end > 0 else b''
+            for line in reversed(lines):
+                if b'"type":"instructions"' in line and b'claude-siso-3/CLAUDE.md' in line:
+                    try:
+                        files = json.loads(line)['attachment']['files']
+                    except (ValueError, KeyError, TypeError):
+                        continue
+                    got = next((x.get('content', '') for x in files if x.get('path', '').endswith('claude-siso-3/CLAUDE.md')), None)
+                    at = ts(json.loads(line).get('timestamp'))
+                    hhmm = at.astimezone(dt.timezone(dt.timedelta(hours=7))).strftime('%H:%M') if at else '?'
+                    return '?' if got is None else hhmm if norm(got) == norm(brain) else hhmm + '*'
+    return '?'
+
+
+DUMP = r"""
+import json, os, sqlite3
+db = sqlite3.connect('file:' + (DBPATH or os.path.expanduser('~/.local/state/siso-code/userdata/statev2.sqlite')) + '?mode=ro', uri=True, timeout=5)
+q = lambda sql, *a: db.execute(sql, a).fetchall()
+def one(sql, *a):
+    r = q(sql, *a)
+    return r[0][0] if r else None
+out = {}
+live = [r[0] for r in q("select distinct thread_id from orchestration_v2_projection_runs where status in ('queued','preparing','starting','running','waiting')")]
+for tid in (list(THREADS) + ([t for t in live if t not in THREADS] if ALL_LIVE else [])):
+    runs = q('select run_id, ordinal, status, requested_at, completed_at, payload_json from orchestration_v2_projection_runs where thread_id=? order by ordinal', tid)
+    d = {'title': one('select title from orchestration_v2_projection_threads where thread_id=?', tid) or '?', 'runs': runs,
+         'items': one('select count(*) from orchestration_v2_projection_turn_items where thread_id=?', tid),
+         'event': one("select occurred_at from orchestration_events where aggregate_kind='thread' and stream_id=? order by sequence desc limit 1", tid),
+         'att': {}, 'msg': {}}
+    for r in runs[-12:]:
+        d['att'][r[0]] = one('select payload_json from orchestration_v2_projection_run_attempts where run_id=? order by attempt_ordinal desc limit 1', r[0])
+        d['msg'][r[0]] = one("select payload_json from orchestration_v2_projection_messages where run_id=? and role='assistant' order by created_at desc limit 1", r[0])
+    out[tid] = d
+print('FLEET-DUMP ' + json.dumps({'threads': out, 'live': live}))
+"""
+SSH = os.environ.get('FLEET_CHECK_SSH', 'ssh')
+HOSTS = {'mini': 'mini-fast'}
+SSH_OPTS = ['-o', 'RemoteCommand=none', '-o', 'RequestTTY=no', '-o', 'ConnectTimeout=5']
+
+
+def dump_script(db_path, threads, all_live):
+    return f'DBPATH = {db_path!r}\nTHREADS = {list(threads)!r}\nALL_LIVE = {all_live!r}\n' + DUMP
+
+
+def parse_dump(text):
+    line = next((l for l in text.splitlines() if l.startswith('FLEET-DUMP ')), None)
+    if line is None:
+        raise ValueError('no dump in output')
+    return json.loads(line[len('FLEET-DUMP '):])
+
+
+def dump_local(db_path, threads, all_live):
+    import contextlib, io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        exec(dump_script(db_path, threads, all_live), {})
+    return parse_dump(buf.getvalue())
+
+
+def dump_remote(machine, threads):
+    """One ssh call reads every thread this machine runs; the script goes in on stdin (no quoting)."""
+    host = HOSTS.get(machine, machine)
+    r = subprocess.run([SSH, *SSH_OPTS, host, 'python3', '-'], input=dump_script('', threads, False), capture_output=True, text=True, timeout=60)
+    if r.returncode:
+        raise RuntimeError((r.stderr.strip().splitlines() or ['ssh failed'])[-1][:80])
+    return parse_dump(r.stdout)
+
+
+def check(stuck_min, long_items=0, db_path=DB, seats_path=SEATS):
+    brain = open(BRAIN).read() if os.path.exists(BRAIN) else ""
+    seats = json.load(open(seats_path))
+    out = []
+    names = {v.get('thread'): k for k, v in seats.items() if v.get('thread') and v.get('runsOn') in (None, 'laptop')}
+    remote = {}
+    for k, v in seats.items():
+        if v.get('thread') and v.get('runsOn') not in (None, 'laptop'):
+            remote.setdefault(v['runsOn'], {})[v['thread']] = k
+    # every thread with a live run is checked too, so a stuck delegated task shows even if it is no seat
+    data = dump_local(db_path, list(names), True)
+    threads = list(names) + sorted(set(data['live']) - set(names))
+    sources = {t: data['threads'][t] for t in threads}
+    for machine, tmap in sorted(remote.items()):
+        try:
+            rd = dump_remote(machine, list(tmap))['threads']
+        except Exception as e:  # ssh down, python missing, db locked: say so, never "no runs"
+            for tid, seat in tmap.items():
+                out.append({'seat': seat, 'thread': tid, 'title': '?', 'items': 0, 'run': None, 'status': f'unreachable ({machine})',
+                            'age': '-', 'said': '', 'problems': [f'UNREACHABLE {machine}: {e}']})
+            continue
+        for tid, seat in tmap.items():
+            names[tid] = seat
+            threads.append(tid)
+            sources[tid] = rd[tid]
+    for tid in threads:
+        src = sources[tid]
+        title = src['title']
+        seat = names.get(tid) or title
+        runs = [list(r) for r in src['runs']]
+        items = src['items']
+        row = {'seat': seat, 'thread': tid, 'title': title, 'items': items, 'problems': []}
+        if long_items and tid in names and items >= long_items:
+            row['problems'].append(f'LONG {items} items (limit {long_items}); at next clean break update HANDOFF, then seat-fresh-t3 {seat!r}')
+        if not runs:
+            row.update(run=None, status='no runs', age='-', said='')
+            out.append(row)
+            continue
+        live = [r for r in runs if r[2] in LIVE and r[2] != 'queued']
+        queued = [r for r in runs if r[2] == 'queued']
+        last = live[-1] if live else [r for r in runs if r[2] != 'queued'][-1] if len(queued) < len(runs) else runs[-1]
+        rid, ordn, status, req, done, payload = last
+        p = json.loads(payload)
+        row.update(run=ordn, status=status)
+        last_event = ts(src['event'])
+        att = src['att'].get(rid)
+        native = json.loads(att).get('nativeThreadId') if att else None
+        tpath = transcript(native)
+        last_write = dt.datetime.fromtimestamp(os.path.getmtime(tpath), dt.timezone.utc) if tpath else None
+        activity = max([t for t in (last_event, last_write) if t] or [None]) if (last_event or last_write) else None
+        row['brain'] = brain_loaded(tpath, brain)
+        row['age'] = ago(ts(done) if done else ts(p.get('startedAt') or req))
+        row['activity'] = ago(activity)
+        msg = src['msg'].get(rid)
+        said = json.loads(msg).get('text', '') if msg else ''
+        row['said'] = first_line(said)
+        row['said_full'] = said
+        quiet = (NOW - activity).total_seconds() / 60 if activity else 1e9
+        if status in LIVE and quiet >= stuck_min:
+            row['problems'].append(f'STUCK run {ordn} {status} {ago(ts(p.get("startedAt") or req))}, nothing for {int(quiet)} min')
+            if queued:
+                row['problems'].append(f'BEHIND {len(queued)} message(s) queued behind it, oldest {ago(ts(queued[0][3]))}')
+        elif queued and not live:
+            held = sum(bool(json.loads(r[5]).get('queueHeld')) for r in queued)
+            row['problems'].append(f'QUEUED {len(queued)} message(s) waiting since {ago(ts(queued[0][3]))} ago with no run going '
+                                   f'(runs {", ".join(str(r[1]) for r in queued)}{f", {held} held after a failed run" if held else ""}): '
+                                   'they will not start by themselves; t3_queue_list, then resume or cancel')
+        if status == 'completed' and said:
+            t = {'end': said, 'reads': 0, 'tools': 0, 'last': 'text', 'ts': done or req, 'last_ts': done or req,
+                 'prompt': '', 'seat': seat, 'session': tid}
+            F.classify([t], [])
+            for k in t['classes']:
+                if k in CLASS:
+                    row['problems'].append(f'{CLASS[k]} ended on "{t["hits"][k][:90]}"')
+            tail = said.strip()[-300:]
+            w = F.WAITBG.search(tail) or WAKE.search(said[:400] + '\n' + tail)
+            if w and quiet >= stuck_min and not [r for r in runs if r[1] > ordn]:
+                row['problems'].append(f'PARKED said "{F.sentence(said, w.group(0)).strip()[:110]}"; nothing has woken it in {int(quiet)} min')
+            m = [x for x in XOFY.finditer(said[:600]) if int(x.group(1)) < int(x.group(2)) and int(x.group(2)) <= 20]
+            if m and quiet >= stuck_min and not queued:
+                row['problems'].append(f'UNFINISHED "{m[0].group(0)}" and idle {int(quiet)} min')
+        elif status in ('failed', 'interrupted', 'cancelled'):
+            row['problems'].append(f'ENDED {status} (run {ordn}), idle since')
+        out.append(row)
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser(description='Every seat in one call (0 tokens).')
+    ap.add_argument('--seat')
+    ap.add_argument('--problems', action='store_true')
+    ap.add_argument('--json', action='store_true')
+    ap.add_argument('--stuck-min', type=int, default=10)
+    ap.add_argument('--long-items', type=int, default=0, help='Flag seat threads at this many items (0 = off, the default; Shaan 17 Oct)')
+    ap.add_argument('--db', default=DB, help=argparse.SUPPRESS)
+    ap.add_argument('--seats', default=SEATS, help=argparse.SUPPRESS)
+    a = ap.parse_args()
+    if a.long_items < 0:
+        ap.error('--long-items must be 0 (off) or positive')
+    rows = check(a.stuck_min, a.long_items, a.db, a.seats)
+    if a.seat:
+        rows = [r for r in rows if r['seat'].lower() == a.seat.lower() or r['thread'] == a.seat]
+    if a.json:
+        print(json.dumps(rows, indent=1))
+        return
+    kinds = {}
+    for r in rows:
+        for pr in r['problems']:
+            kinds[pr.split()[0]] = kinds.get(pr.split()[0], 0) + 1
+    local = NOW.astimezone(dt.timezone(dt.timedelta(hours=7)))
+    print(f"fleet-check {local:%d %b %H:%M} +07 · {len(rows)} threads · "
+          f"{sum(r['status'] in LIVE for r in rows)} running · "
+          + (' · '.join(f'{v} {k}' for k, v in sorted(kinds.items())) or 'no problems'))
+    print(f"{'SEAT':16} {'ITEMS':>6} {'RUN':>4} {'STATUS':10} {'AGE':>6} {'QUIET':>6} {'BRAIN':6}  LAST WORDS TO SHAAN")
+    for r in rows:
+        if a.problems and not r['problems']:
+            continue
+        print(f"{r['seat'][:16]:16} {r['items']:>6} {str(r.get('run') or '-'):>4} {r['status'][:10]:10} {r.get('age', '-'):>6} "
+              f"{r.get('activity', '-'):>6} {r.get('brain', '?'):6}  {r['said'][:104]}")
+        for pr in r['problems']:
+            print(f"{'':18}! [{r['seat']}] {pr}")
+        if a.seat and r.get('said_full'):
+            print('\n' + r['said_full'])
+
+
+if __name__ == '__main__':
+    main()

@@ -8,5 +8,5 @@
   - UI: `ui-pick`
   - Repos and components: `Great_Library_of_SISO/banks/`
 - **Search:** code symbols (definitions, callers) with Serena (`query_project`, or `serena-tool` from a shell), not grep.
-- **Heavy commands** (tsc, vitest, builds, Playwright): run them as `heavy -- <cmd>`, and close any browser you open.
-- **Showing him:** a URL (`console-post`), in the `adhd-agent-output` shape.
+- **Heavy:** `heavy --class quick -- <cmd>` for bounded checks; `heavy -- <cmd>` for builds/scans. Close test browsers.
+- **Showing him:** a real link (`show-page <page> <slug>`), never the SISO console.

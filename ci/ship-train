@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""Deterministic PR train. One full test of the merged head; deploy only observed green."""
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import time
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import red_main
+import worker_pool
+loader = importlib.machinery.SourceFileLoader('train_ci', str(HERE / 'siso-ci'))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+ci = importlib.util.module_from_spec(spec)
+sys.modules[loader.name] = ci
+loader.exec_module(ci)
+
+
+def latest(repo, sha, context):
+    statuses = ci.gh_json('api', f'repos/{repo}/commits/{sha}/statuses', '--paginate') or []
+    return next((s['state'] for s in statuses if s['context'] == context), None)
+
+
+def atomic(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + '.tmp')
+    tmp.write_text(json.dumps(value, sort_keys=True) + '\n')
+    os.replace(tmp, path)
+
+
+def read_green(path):
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def full(repo, cfg, branch, sha, base, record):
+    ci.post_status(repo, sha, 'pending', 'full train suite running', context='siso-ci/train')
+    d = ci.checkout(repo, sha, branch)
+    commands = ci.commands(repo, d, cfg)
+    if not commands or not commands.get('test'):
+        raise RuntimeError('no full suite configured for train')
+    code, out, seconds = ci.run_tests(repo, d, commands, base or sha)
+    waits = [float(v) for v in re.findall(r'heavy: ticket \d+ admitted slot \d+ after ([0-9.]+)s', out)]
+    measured = re.findall(r'\[siso-ci-admission-seconds\] ([0-9.]+)', out)
+    queue_wait = float(measured[-1]) if measured else (sum(waits) if waits else 0)
+    record['queue_wait_seconds'] += queue_wait
+    record['test_seconds'] += max(0, seconds - queue_wait)
+    record['test_runs'] += 1
+    # Logs stay private on disk; never publish raw test output or credentials.
+    log = Path(ci.WORK) / ('test-' + sha + '.log')
+    log.write_text(out)
+    log.chmod(0o600)
+    if code and any(marker in out.lower() for marker in ('enospc', 'no space left on device', 'enotfound', 'eai_again')):
+        code = 125
+        record['infrastructure_failure'] = True
+    ci.post_status(repo, sha, 'success' if code == 0 else ('error' if code >= 124 else 'failure'),
+                   f'full train suite exit {code}; {seconds:.1f}s', context='siso-ci/train')
+    record['test_exit'] = code
+    return code, d, commands
+
+
+def held(root):
+    """A HOLD file in the train's directory stops everything it does: no PR merged, no suite run, no deploy. Used while
+    the box is live (a night streaming); `rm HOLD` lifts it and the next train ships the green head."""
+    return (Path(root) / 'HOLD').exists()
+
+
+def deploy(repo, cfg, branch, green, record):
+    hook = cfg.get('train', {}).get('deploy')
+    if held(ci.WORK):  # ci.WORK is the train's directory while a train runs
+        record['deploy_state'] = 'held'
+        return
+    if not hook or not green:
+        record['deploy_state'] = 'unconfigured' if not hook else 'no-green'
+        return
+    sha = green['sha']
+    if latest(repo, sha, 'siso-ci/train') != 'success':
+        raise RuntimeError('last-green lost its successful train status; deployment refused')
+    d = ci.checkout(repo, sha, branch)
+    if ci.sh(['git', 'merge-base', '--is-ancestor', sha, 'FETCH_HEAD'], cwd=d, check=False).returncode:
+        raise RuntimeError('last-green is no longer on branch; deployment refused')
+    stamp = Path(ci.WORK) / 'deployed.json'
+    if stamp.exists() and json.loads(stamp.read_text()).get('sha') == sha:
+        record['deploy_state'] = 'already-deployed'
+        return
+    started = time.monotonic()
+    heavy = '' if os.environ.get('SISO_HEAVY_LEASE') else ci.sh_quote(str(HERE.parent / 'bin/heavy')) + ' -- '
+    code, output = ci.run_step(heavy + 'sh -c ' + ci.sh_quote(hook), d,
+                          {'SISO_CI_SHA': sha, 'SISO_CI_BRANCH': branch}, cfg.get('train', {}).get('deploy_timeout', 2700))
+    waits = [float(v) for v in re.findall(r'heavy: ticket \d+ admitted slot \d+ after ([0-9.]+)s', output)]
+    record['queue_wait_seconds'] += sum(waits)
+    record['deploy_seconds'] += max(0, time.monotonic() - started - sum(waits))
+    log = Path(ci.WORK) / ('deploy-' + sha + '.log')
+    log.write_text(output)
+    log.chmod(0o600)
+    record.update(deploy_state='success' if code == 0 else 'failed', deploy_exit=code, deployed_sha=sha if code == 0 else None)
+    if code == 0:
+        atomic(stamp, {'repo': repo, 'branch': branch, 'sha': sha, 'at': time.time()})
+
+
+def ready(repo, branch, label=None):
+    prs = ci.gh_json('pr', 'list', '--repo', repo, '--base', branch, '--state', 'open', '--limit', '500',
+                    '--json', 'number,headRefOid,isDraft,mergeable,labels,createdAt') or []
+    eligible, dropped = [], []
+    for pr in sorted(prs, key=lambda p: p['number']):
+        reason = None
+        if pr['isDraft']:
+            reason = 'draft'
+        elif label and label not in [l['name'] for l in pr['labels']]:
+            reason = 'missing-label'
+        elif pr['mergeable'] != 'MERGEABLE':
+            reason = 'not-mergeable'
+        elif latest(repo, pr['headRefOid'], 'siso-ci/pr') != 'success':
+            reason = 'head-not-green'
+        if reason:
+            dropped.append({'number': pr['number'], 'reason': reason})
+        else:
+            eligible.append(pr)
+    return eligible, dropped
+
+
+def merge(repo, number, sha):
+    ci.sh(['gh', 'pr', 'merge', str(number), '--repo', repo, '--merge', '--match-head-commit', sha], timeout=120)
+
+
+def recover(repo, branch, cfg, source, commands, bad, good, record):
+    start = time.monotonic()
+    try:
+        incident = red_main.recover(ci, repo, source, commands, bad, good, target=branch)
+        record['recovery_pr'] = incident['pr']
+        record['culprit'] = incident['culprit']
+        # Existing bot has tested this exact revert and published through land.
+        pr = ci.gh_json('pr', 'view', incident['pr'], '--repo', repo,
+                        '--json', 'number,headRefOid,baseRefName,isDraft,mergeable,state')
+        if pr['baseRefName'] != branch or pr['headRefOid'] != incident['revert']:
+            raise RuntimeError('recovery PR does not match the tested revert and target branch')
+        ci.post_status(repo, pr['headRefOid'], 'success', 'red-main tested full revert suite', context='siso-ci/pr')
+        if pr['state'] == 'OPEN':
+            if pr['isDraft'] or pr['mergeable'] != 'MERGEABLE':
+                raise RuntimeError('recovery PR not mergeable yet; retry next train')
+            merge(repo, pr['number'], pr['headRefOid'])
+        # Link the culprit to its originating PR and retain the association in JSONL.
+        prs = ci.gh_json('api', f"repos/{repo}/commits/{incident['culprit']}/pulls") or []
+        record['prs_dropped'].extend({'number': p['number'], 'reason': 'culprit-reverted'} for p in prs)
+        for pr in prs:
+            body = f"Ship train `{bad}` failed its full suite. red-main identified `{incident['culprit']}` and landed tested recovery {incident['pr']}."
+            ci.comment(repo, pr['number'], body)
+        return True
+    finally:
+        record['bisect_seconds'] += time.monotonic() - start
+
+
+
+def import_green(repo, branch, cfg, head, path):
+    """Import only a receipted successful *branch full run*, never an old PR green."""
+    legacy = ci.HOST_CONFIG.get('legacy_work_root')
+    if not legacy:
+        return None
+    state_path = Path(legacy) / 'state.json'
+    if not state_path.exists():
+        return None
+    state = json.loads(state_path.read_text())
+    candidates = {key.split('@', 1)[1]: value for key, value in state.get('done', {}).items()
+                  if key.startswith(repo + '@') and value.get('branch') == branch and value.get('state') == 'success'}
+    if not candidates:
+        return None
+    d = ci.checkout(repo, head, branch)
+    history = ci.sh(['git', 'rev-list', '--first-parent', head], cwd=d).stdout.splitlines()
+    for sha in history:
+        if sha in candidates and latest(repo, sha, 'siso-ci') == 'success':
+            green = {'repo': repo, 'branch': branch, 'sha': sha, 'at': time.time(), 'source': 'receipted-full-branch-run'}
+            ci.post_status(repo, sha, 'success', 'imported recorded successful full branch suite', context='siso-ci/train')
+            atomic(path, green)
+            return green
+    return None
+
+
+def known_red(seen):
+    """A head that failed on enough separate trains is left alone until it changes (timeouts and infrastructure get
+    one more try than a test failure; a recovery step marked retryable always gets its turn)."""
+    if not seen or seen.get('retry'):
+        return False
+    return seen.get('tries', 0) >= (2 if 0 < seen.get('code', 0) < 124 else 3)
+
+
+def train(repo, branch, cfg, queued_at=None):
+    root = Path(ci.WORK) / 'trains' / repo / branch
+    root.mkdir(parents=True, exist_ok=True)
+    record = {'repo': repo, 'branch': branch, 'started_at': time.time(),
+              'queue_wait_seconds': max(0, time.time() - (queued_at or time.time())),
+              'test_seconds': 0, 'test_runs': 0, 'bisect_seconds': 0, 'deploy_seconds': 0,
+              'prs_in': [], 'prs_dropped': [], 'state': 'running'}
+    previous_work = ci.WORK
+    try:
+        with worker_pool.lock(root / 'train.lock'):
+            ci.WORK = str(root)
+            if held(root):
+                record['state'] = 'held'
+                return 0
+            worker_pool.disk_guard(root, cfg.get('train', {}).get('minimum_free_mb', 2048))
+            green_path = root / 'last-green.json'
+            green = read_green(green_path)
+            eligible, record['prs_dropped'] = ready(repo, branch, cfg.get('train', {}).get('label'))
+            for pr in eligible:
+                try:
+                    merge(repo, pr['number'], pr['headRefOid'])
+                    record['prs_in'].append({'number': pr['number'], 'sha': pr['headRefOid']})
+                except Exception:
+                    record['prs_dropped'].append({'number': pr['number'], 'reason': 'merge-race-or-refusal'})
+            head = ci.gh_json('api', f'repos/{repo}/commits/{branch}')['sha']
+            if not green:
+                green = import_green(repo, branch, cfg, head, green_path)
+            record['head'] = head
+            atomic(root / 'running.json', record)
+            heads_path = root / 'heads.json'
+            heads = json.loads(heads_path.read_text()) if heads_path.exists() else {}
+            seen = heads.get(head, {})
+            retry_pending = False
+            if green and green['sha'] == head and latest(repo, head, 'siso-ci/train') == 'success':
+                record['state'] = 'unchanged-green'
+            elif cfg.get('train', {}).get('suite') == 'nightly':
+                # Shaan, 17 Oct: the checks "take the piss". Every PR in this head already passed its own gate, so the
+                # head ships now; the full suite runs once a night (nightly()) and only reports.
+                green = {'repo': repo, 'branch': branch, 'sha': head, 'at': time.time(), 'source': 'green-pr-gates'}
+                atomic(green_path, green)
+                ci.post_status(repo, head, 'success', 'shipped on green PR gates; full suite runs nightly', context='siso-ci/train')
+                ci.post_status(repo, head, 'success', 'shipped on green PR gates; full suite runs nightly', context='siso-ci')
+                record.update(state='green', suite='nightly')
+            elif known_red(seen):
+                # The same head already failed its full suite (and recovery had its turn): testing it again every
+                # tick would only burn the box; the next merge or revert gives a new head.
+                record['state'] = 'red'
+                record['known_red'] = seen
+            else:
+                code, source, commands = full(repo, cfg, branch, head, green['sha'] if green else None, record)
+                if 0 < code < 124:  # a flaky test must fail twice before anything is bisected
+                    code, source, commands = full(repo, cfg, branch, head, green['sha'] if green else None, record)
+                    record['flaky'] = code == 0
+                if code and green:
+                    deploy(repo, cfg, branch, green, record)  # promotion never waits on a long bisect
+                if code and code < 124 and green:
+                    try:
+                        if recover(repo, branch, cfg, source, commands, head, green['sha'], record):
+                            head = ci.gh_json('api', f'repos/{repo}/commits/{branch}')['sha']
+                            code, source, commands = full(repo, cfg, branch, head, green['sha'], record)
+                    except Exception as e:
+                        blocked = isinstance(e, red_main.RecoveryBlocked)
+                        record['recovery_blocked'] = str(e) if blocked else type(e).__name__
+                        retry_pending = blocked and e.retry
+                        if blocked and 'already green' in str(e):  # it failed once, then passed: promote on a fresh run
+                            code, source, commands = full(repo, cfg, branch, head, green['sha'], record)
+                if code == 0:
+                    green = {'repo': repo, 'branch': branch, 'sha': head, 'at': time.time()}
+                    atomic(green_path, green)
+                    # Legacy HALO deployment readers also require this context.
+                    ci.post_status(repo, head, 'success', 'full ship train suite passed', context='siso-ci')
+                    record['state'] = 'green'
+                else:
+                    record['state'] = 'red'
+                    heads[head] = {'code': code, 'tries': seen.get('tries', 0) + 1, 'retry': retry_pending}
+                    atomic(heads_path, dict(list(heads.items())[-20:]))
+            record['last_green'] = green['sha'] if green else None
+            deploy(repo, cfg, branch, green, record)
+    except BlockingIOError:
+        record['state'] = 'locked'
+    except Exception as e:
+        record['state'] = 'blocked'
+        record['error'] = type(e).__name__  # subprocess errors may carry secrets
+    finally:
+        ci.WORK = previous_work
+        record['elapsed_seconds'] = time.time() - record['started_at']
+        if record['state'] not in ('locked', 'held'):  # another train owns the branch; its record is the one that counts
+            atomic(root / 'latest.json', record)
+            # O_APPEND one write: separate invocations cannot overwrite timings.
+            with (root / 'minutes-lost.jsonl').open('a') as fd:
+                fd.write(json.dumps(record, sort_keys=True) + '\n')
+        print(json.dumps(record, sort_keys=True))
+    return 0 if record['state'] in ('green', 'unchanged-green', 'locked') and record.get('deploy_state') != 'failed' else 1
+
+
+def nightly(repo, branch, cfg, now=None):
+    """The full suite, once a night (or after `nightly_after_commits` new commits), on the train's head. Report only:
+    it posts siso-ci/nightly, and on red the red-main bisect names the first bad landing and files an issue. It never
+    reverts, merges or blocks a ship. Own directory, clone and lock, so a long run never delays the train."""
+    t = cfg.get('train', {})
+    now = time.time() if now is None else now
+    root = Path(ci.WORK) / 'trains' / repo / branch / 'nightly'
+    root.mkdir(parents=True, exist_ok=True)
+    record = {'kind': 'nightly', 'repo': repo, 'branch': branch, 'started_at': now, 'state': 'not-due'}
+    previous_work = ci.WORK
+    try:
+        with worker_pool.lock(root / 'nightly.lock'):
+            ci.WORK = str(root)
+            state_path = root / 'state.json'
+            state = json.loads(state_path.read_text()) if state_path.exists() else {}
+            head = ci.gh_json('api', f'repos/{repo}/commits/{branch}')['sha']
+            record['head'] = head
+            if state.get('sha') == head:
+                return 0
+            ahead = 0
+            if state.get('sha'):
+                ahead = (ci.gh_json('api', f"repos/{repo}/compare/{state['sha']}...{head}") or {}).get('ahead_by', 0)
+            due = (not state or now - state.get('at', 0) >= t.get('nightly_every', 86400)
+                   or ahead >= t.get('nightly_after_commits', 40))
+            if not due or held(root.parent):
+                return 0
+            ci.post_status(repo, head, 'pending', 'nightly full suite running', context='siso-ci/nightly')
+            d = ci.checkout(repo, head, branch)
+            commands = ci.commands(repo, d, cfg)
+            if not commands or not commands.get('test'):
+                raise RuntimeError('no full suite configured for nightly')
+            code, out, seconds = ci.run_tests(repo, d, commands, state.get('green') or head)
+            if 0 < code < 124:  # a flaky test must fail twice
+                code, out, seconds = ci.run_tests(repo, d, commands, state.get('green') or head)
+            log = root / ('nightly-' + head + '.log')
+            log.write_text(out)
+            log.chmod(0o600)
+            ci.post_status(repo, head, 'success' if code == 0 else ('error' if code >= 124 else 'failure'),
+                           f'nightly full suite exit {code}; {seconds:.0f}s (report-only)', context='siso-ci/nightly')
+            record.update(state='green' if code == 0 else 'red', test_exit=code, test_seconds=seconds)
+            if code and 0 < code < 124 and state.get('green'):
+                try:
+                    found = red_main.recover(ci, repo, d, commands, head, state['green'], target=branch, report_only=True)
+                    record.update(culprit=found.get('culprit'), issue=found.get('issue'))
+                except Exception as e:
+                    record['bisect'] = str(e) if isinstance(e, red_main.RecoveryBlocked) else type(e).__name__
+            elif code:
+                record['bisect'] = 'no earlier green nightly to bisect from' if not state.get('green') else 'infrastructure failure'
+            state = {'sha': head, 'at': now, 'code': code, 'green': head if code == 0 else state.get('green')}
+            atomic(state_path, state)
+    except BlockingIOError:
+        record['state'] = 'locked'
+    except Exception as e:
+        record['state'] = 'blocked'
+        record['error'] = type(e).__name__
+    finally:
+        ci.WORK = previous_work
+        record['elapsed_seconds'] = time.time() - record['started_at']
+        print(json.dumps(record, sort_keys=True))
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('repo')
+    parser.add_argument('branch')
+    parser.add_argument('--queued-at', type=float)
+    parser.add_argument('--nightly', action='store_true', help='run the report-only full suite if it is due')
+    args = parser.parse_args()
+    cfg = ci.config().get(args.repo)
+    if any(p in ('', '.', '..') for p in args.branch.split('/')) or args.branch.startswith('-') or not re.fullmatch(r'[\w.-]+/[\w.-]+', args.repo) or not cfg or args.branch not in cfg.get('train', {}).get('branches', []):
+        parser.error('repository/branch is not configured for a train')
+    if args.nightly:
+        return nightly(args.repo, args.branch, cfg)
+    return train(args.repo, args.branch, cfg, args.queued_at)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -1,0 +1,431 @@
+# Every website found (AGENTS-HUB research, 14 Oct 2026)
+
+400 distinct site URLs (failed-check rows removed). ✓ = re-opened and confirmed by a checker; · = found, not re-checked.
+
+## Rendered UI references (camofox) (2)
+- ✓ [LMArena WebDev leaderboard](https://lmarena.ai/leaderboard/webdev) — Human-preference arena leaderboard for web-development models, with category and domain facets.
+- ✓ [Vals AI benchmark home](https://www.vals.ai/) — Independent model benchmark hub running its own tasks across finance, software, cybersecurity and more.
+
+## Skill hubs and directories (41)
+- ✓ [Agensi](https://www.agensi.io) — Paid, curated skill marketplace: creators keep 70 percent, flat 30 percent platform fee; skills run inside the
+- ✓ [Agent Skills Guide (agentskills.guide)](https://www.everydev.ai/tools/agent-skills-guide) — Human-curated community directory for Claude Code and other agents, with a cookbook for publishing skills; ope
+- ✓ [AgenticSkills (agenticskills.io/ai-skills-directories)](https://agenticskills.io/ai-skills-directories) — Comparison table of skills directories (skills.sh, SkillsMP, Skills Directory, Awesome Skills) plus its own cu
+- ✓ [Awesome Skills Dev (awesomeskills.dev)](https://awesomeskills.dev) — Curated agent skills directory for Claude Code, Codex and Cursor with Official, Community, and 'Task' recipes 
+- ✓ [BehiSecc/awesome-claude-skills (Context Awesome)](https://www.context-awesome.com/list/BehiSecc/awesome-claude-skills) — Awesome list of Claude skills, shown on the Context Awesome aggregator with 13 categories.
+- ✓ [Browse.sh (Browserbase)](https://browse.sh) — Catalog of curated browser-automation SKILL.md recipes, installed with the browse CLI.
+- ✓ [ClaudSkills (claudskills.com)](https://claudskills.com) — Third-party, community-run 'open SKILL.md registry for Claude' with per-skill pages, static security scans, an
+- ✓ [Claude Market (claudemarket.ai)](https://www.claudemarket.ai/blog/best-agent-skills-directories) — Publisher of a directory of skills, plugins and MCP servers that also runs a comparison blog ranking the direc
+- ✓ [KDnuggets: top 5 agent skill marketplaces](https://www.kdnuggets.com/top-5-agent-skill-marketplaces-for-building-powerful-ai-agents) — Editorial roundup naming SkillsMP, LobeHub, agentskill.sh, skills.sh and ClawHub as the five marketplaces.
+- ✓ [KissMySkills](https://kissmyskills.com) — Paid marketplace for skills, prompt packs and agents, sold as a subscription library or per-file purchases, wi
+- ✓ [LobeHub Skills](https://lobehub.com/skills) — Large agent-skills browser that says it is compatible with Claude Code, Codex CLI and ChatGPT; SKILL.md catalo
+- ✓ [MCP.Directory skills index](https://mcp.directory/skills) — Directory of MCP servers and agent skills, with publisher pages, a skills leaderboard and category pages.
+- ✓ [SkillHub (skillhub.club)](https://www.skillhub.club) — Skill registry with an S-to-D letter-grade system, a desktop app, and stacks (bundles) that cost credits; Pro 
+- ✓ [SkillMD (Product Hunt launch, hunted.space mirror)](https://hunted.space/product/skillmd) — Registry for Claude Code Agent Skills (SKILL.md files), 'similar to npm', with one-line installs and a claimed
+- ✓ [SkillsLLM](https://skillsllm.com) — Directory of open-source AI skills for Claude Code, Codex CLI and ChatGPT, with a security-vetted claim and MC
+- ✓ [SkillsMP](https://skillsmp.com) — Community index that harvests public SKILL.md files from GitHub and makes them searchable by keyword, category
+- ✓ [Smithery](https://smithery.ai) — Marketplace where agents find, build and deploy skills, plus thousands of MCP servers; has a CLI skill search.
+- ✓ [Smithery skills](https://smithery.ai/skills) — Skills section of Smithery (the MCP registry and installer), with a Verified filter and a skill-level verified
+- ✓ [TypingMind AI Skills Directory](https://www.typingmind.com/skills) — Directory of open-source AI skills run by TypingMind (a chat front end); each skill is a set of instructions p
+- ✓ [Vibe Index](https://vibeindex.ai/skills) — Community directory for skills, plugins, MCP servers and marketplaces, with an Official Only filter and star-b
+- ✓ [agenticskills.io (directory and spec site)](https://agenticskills.io) — Site for the Agent Skills spec plus a directory of 193 curated skills and 196 MCP servers; quality-filtered ra
+- ✓ [agentskills.io (the standard)](https://agentskills.io) — The Agent Skills open standard site: spec and list of compatible clients. Does not catalogue individual skills
+- ✓ [aitmpl.com (Claude Code Templates)](https://aitmpl.com) — Web catalog and npm CLI (npx claude-code-templates) for Claude Code components: agents, commands, MCP integrat
+- ✓ [claude-plugins.dev (registry API)](https://claude-plugins.dev) — Lightweight registry for Claude Skills and Claude Code plugins; crawls GitHub hourly for marketplace manifests
+- ✓ [claudemarketplaces.com](https://claudemarketplaces.com/skills) — Community-run, hand-curated directory of Claude Code skills, MCP servers and plugin marketplaces (not Anthropi
+- ✓ [claudeskills.info](https://claudeskills.info) — Searchable directory of Claude/agent skills and harness components, with categories and a JSON search endpoint
+- ✓ [mdskills.ai](https://www.mdskills.ai/about) — Open community marketplace for agent skills, plugins, MCP servers and tools; calls every listing reviewed by a
+- ✓ [mdskills.ai](https://mdskills.ai) — Skill, plugin and MCP marketplace that claims every listing is reviewed for quality, security and compatibilit
+- ✓ [ossrules.md](https://ossrules.md) — Directory of agent instruction files (AGENTS.md, CLAUDE.md, .rules) and their skills taken from 100 popular op
+- ✓ [ossrules.md (AGENTS.md collection)](https://aiengineerguide.com/til/ossrules-md/) — Collection of AGENTS.md files from leading open-source projects, plus skill files projects use, with an llms.t
+- ✓ [skills.sh (Vercel)](https://skills.sh) — Vercel's directory and install-telemetry leaderboard for SKILL.md agent skills, launched with the npx skills C
+- · [Agensi](https://peerpush.com/p/agensi) — Paid, curated marketplace for agent skills; every skill security-scanned; one-time purchases.
+- · [Agent Skills Marketplace (ethical.institute)](https://ethical.institute/blog/announcing-the-agent-skills-marketplace/) — Open-source, deliberately curated catalogue of portable agent skills that installs into Claude Code and Copilo
+- · [Awesome Skills marketplace (awesomeskill.ai)](https://awesomeskill.ai) — Marketplace for skills used with Claude, Codex and ChatGPT; exposes a search API (q=, limit=) and a featured f
+- · [Claude connectors and skills directory](https://claude.com/connectors) — Anthropic's in-product directory of partner skills and connectors (Notion, Figma, Atlassian and others) for Cl
+- · [ClawHub (OpenClaw registry)](https://clawhub.ai) — Public registry for OpenClaw skills and plugins; versioned SKILL.md bundles with metadata and version history.
+- · [CursorList (Enterprise DNA)](https://enterprisedna.co/directories/skills/cursorlist) — Community directory of pre-built .cursorrules files for common workflows, indexed from awesome-cursorrules.
+- · [GPT Store (ChatGPT)](https://chatgpt.com/gpts) — ChatGPT's built-in directory of custom GPTs (the pre-skills version of the agent-marketplace idea), launched J
+- · [Gemini CLI extensions gallery](https://geminicli.com/docs/extensions/) — Gemini CLI's extension gallery; extensions bundle skills (skills/<name>/SKILL.md), MCP servers, commands, hook
+- · [localskills.sh](https://localskills.sh) — Full skills registry with accounts, versioning and team features; sits in the 'registry' class in a vendor com
+- · [playbooks.com](https://playbooks.com) — Third-party catalog of MCP servers and agent skills; lists community repos such as williacj/claude-skills; als
+
+## MCP registries, gateways and tool platforms (26)
+- ✓ [Azure API Center MCP registry](https://learn.microsoft.com/en-us/azure/api-center/register-discover-mcp-server) — Enterprise MCP inventory in Azure API Center, with a partner MCP catalog, a portal for discovery and an MCP re
+- ✓ [Claude plugin directory (official marketplace)](https://claude.com/docs/directory/publish.md) — Anthropic's official plugin directory, surfaced in Claude Code as the claude-plugins-official marketplace; sub
+- ✓ [ClaudePluginHub](https://www.claudepluginhub.com/blog/where-to-find-claude-code-plugin-marketplace) — Independent, non-affiliated web directory for browsing, rating and submitting Claude Code plugins.
+- ✓ [Composio](https://composio.dev/blog/zapier-alternatives) — Developer-first tool layer for agents with managed OAuth, token refresh and tool schemas across SaaS apps.
+- ✓ [DesignRevision: Best MCP Marketplaces and Registries (2026)](https://designrevision.com/blog/best-mcp-marketplaces-and-registries) — Blog roundup naming the official registry, Glama, mcp.so, PulseMCP, Smithery, Docker MCP Catalog, Awesome MCP 
+- ✓ [Docker MCP Catalog (Docker Hub)](https://hub.docker.com/mcp) — Catalog of containerized MCP servers in Docker Hub, consumed in Docker Desktop MCP Toolkit.
+- ✓ [Docker MCP Catalog and Toolkit](https://docs.docker.com/ai/mcp-catalog-and-toolkit/catalog.md) — Curated catalog of MCP servers packaged as Docker images on Docker Hub (mcp namespace), with a gateway that cl
+- ✓ [Flowise Marketplace (templates)](https://www.mintlify.com/FlowiseAI/Flowise/features/marketplace) — Flowise template hub with community chatflows, custom templates, AgentflowV2 agent workflows and tool template
+- ✓ [Gemini CLI extensions gallery](https://geminicli.com/extensions) — Official gallery of Gemini CLI extensions, official Google and third-party; /extensions/browse/ now redirects 
+- ✓ [Glama MCP servers directory](https://glama.ai/mcp/servers) — Largest open MCP server directory; describes itself as a superset of the official MCP Registry; also lists hos
+- ✓ [LobeHub MCP Market](https://market.lobehub.com/s/plugins) — Plugin market for MCP servers (LobeHub, with CLI mcp view and search), with ratings and install counts.
+- ✓ [MCP.Directory](https://mcp.directory/) — Directory of MCP servers and agent skills with a publisher pages model.
+- ✓ [Make template gallery and Agent Library](https://createwith.com/tool/make/updates/make-launches-agent-library-with-pre-built-templates-for-ai-powered-workflows) — Make's template gallery with an AI category and a newer Agent Library of pre-built agent templates for marketi
+- ✓ [Official MCP Registry](https://registry.modelcontextprotocol.io/) — Official, community-owned MCP server registry (public servers only); exposes a REST API (v0/servers).
+- ✓ [OpenAI ChatGPT app directory (now Plugin directory)](https://help.openai.com/articles/11487775) — ChatGPT's in-app directory for apps built on the Apps SDK (MCP-based); per OpenAI's help page, the app directo
+- ✓ [PulseMCP](https://www.pulsemcp.com/) — Community directory for public MCP servers and MCP-aware clients, with a newsletter and MCP launch news; has a
+- ✓ [Zapier MCP](https://zapier.com/compare/zapier-vs-composio) — Zapier's MCP servers that connect AI assistants and coding tools to Zapier app actions.
+- ✓ [mcp.so](https://mcp.so/) — Community MCP server directory with per-server config snippets for MCP clients; open-source code under the cha
+- ✓ [n8n template library (n8n.io/workflows)](https://docs.n8n.io/build/ways-of-building-workflows/use-templates) — n8n's official workflow template library, browsed in the app or on n8n.io; self-hosts can point N8N_TEMPLATES_
+- · [Claude Code Plugin Hub (feedbagel)](https://feedbagel.com/post/claude-code-plugin-hub-directory-for-plugin-discovery-and-marketplace-comparison) — Navigation site that curates Claude Code plugins and plugin marketplaces for discovery, evaluation and adoptio
+- · [Cloudflare remote MCP servers (docs)](https://developers.cloudflare.com/agents/model-context-protocol/) — Cloudflare guidance for building and deploying remote MCP servers on Workers with Streamable HTTP and OAuth.
+- · [Cursor Marketplace and Customize page](https://cursor.com/docs/plugins) — Cursor's first-party plugin marketplace plus a Customize page to install and manage plugins, skills and MCP se
+- · [Dify Marketplace](https://marketplace.dify.ai) — Marketplace for Dify plugins: models, tools, agent strategies, extensions and bundles; community plugins enter
+- · [OpenTools](https://www.opentools.com/) — MCP tool API product with a registry of supported MCPs (Exa, Brave, Google Maps, Firecrawl shown).
+- · [VS Code agent plugins and MCP gallery](https://code.visualstudio.com/learn/agents/3-agent-plugins) — VS Code's two discovery surfaces: an MCP server gallery (opened by typing @mcp in Extensions) and an agent plu
+- · [Windsurf MCP marketplace (Cascade panel)](https://fast.io/resources/windsurf-mcp-setup-guide.md) — Built-in MCP browse and install inside the Windsurf Cascade panel (MCPs icon top right).
+
+## Plugin marketplaces, agent stores and template galleries (36)
+- ✓ [AWS Marketplace: AI Agents and Tools](https://aws.amazon.com/marketplace/solutions/ai-agents-and-tools) — AWS Marketplace section for pre-built agents, agent tools (MCP servers, knowledge bases, guardrails, web searc
+- ✓ [Apify Store (Actors and MCP)](https://apify.com/store) — Store of ready-to-run Actors (tools) that agents call through the hosted Apify MCP server at mcp.apify.com; a 
+- ✓ [ChatGPT Directory and Apps SDK docs (now titled Plugins)](https://developers.openai.com/apps-sdk/) — OpenAI developer docs for building and publishing ChatGPT apps. The page now describes plugins: skills plus MC
+- ✓ [Claude Connectors Directory (MCP connectors)](https://claude.com/docs/connectors/directory) — One catalog of MCP connectors for claude.ai, Claude Desktop, mobile, Claude Code and Cowork, with Verified and
+- ✓ [Claude Market (claudemarket.ai)](https://claudemarket.ai/) — Directory of skills, MCP servers, plugins and Connectors for Claude Code, OpenClaw, Hermes and Codex, with a m
+- ✓ [Claude Marketplace (claude.com/plugins)](https://claude.com/plugins) — Consumer-facing browse page for Anthropic-listed plugins: each plugin bundles tools, skills and integrations, 
+- ✓ [Composio toolkits](https://composio.dev/toolkits) — Catalog of managed-auth toolkits (apps) reached by agents through MCP or a direct API; Native Tools and MCP mo
+- ✓ [Gemini Gems (gallery and Gem manager)](https://support.google.com/gemini/answer/15146780) — Saved custom instruction sets in Gemini Apps; premade Gems can be tried or copied and edited. Gallery-style br
+- ✓ [Google Agent Garden](https://developers.googleblog.com/en/agent-garden-samples-for-learning-discovering-and-building/) — Console library of sample agents and tools built with the Agent Development Kit, each with use cases, architec
+- ✓ [Gumloop templates](https://www.gumloop.com/templates) — Gumloop's public template page for AI workflow flows, meant for copy-into-workspace use.
+- ✓ [Hugging Face Spaces as MCP servers](https://huggingface.co/docs/hub/spaces-mcp-servers) — Any public Space with the grey MCP badge can be added as a callable tool for MCP clients; Gradio apps become s
+- ✓ [Kong MCP Registry (Konnect Catalog)](https://www.konghq.com/company/press-room/press-release/kong-introduces-mcp-registry) — Enterprise directory inside Kong Konnect Catalog to register, discover and govern MCP servers and AI-native to
+- ✓ [Lindy agent use-case templates](https://www.lindy.ai/templates) — Lindy's public page of agent use cases for teams (productivity, marketing, sales, customer support, operations
+- ✓ [MCP Market (mcpmarket.com)](https://mcpmarket.com/) — MCP server and agent-skill directory with Official, Featured, Top MCP Servers, Latest, Top Agent Skills and MC
+- ✓ [Make Templates](https://www.make.com/en/templates) — Make's public scenario templates, created by Make and by its user community, with category tabs for AI, Commer
+- ✓ [Microsoft 365 Copilot Agent Store](https://devblogs.microsoft.com/microsoft365dev/introducing-the-agent-store-build-publish-and-discover-agents-in-microsoft-365-copilot/) — Curated store inside Microsoft 365 Copilot where agents built by Microsoft, trusted partners and customers can
+- ✓ [Nango API integrations](https://nango.dev/api-integrations) — Catalog of pre-built API integrations with managed auth, rate limits, pagination and webhooks, plus an MCP and
+- ✓ [OpenRouter server tools](https://openrouter.ai/docs/guides/features/server-tools) — Built-in tools that OpenRouter runs server-side for any model (beta): web search, web fetch, shell, bash, file
+- ✓ [Pipedream Connect](https://pipedream.com/apps) — Managed-auth app registry for agents with three surfaces: Auth (embedded), Tools (SDK, REST or app-specific MC
+- ✓ [Relevance AI agent marketplace](https://marketplace.relevanceai.com/) — Marketplace of pre-built Relevance AI agents, tools and workforces, reached from relevanceai.com/agent-templat
+- ✓ [Salesforce AgentExchange](https://agentexchange.salesforce.com/) — Marketplace and community for Agentforce: AI agents, actions, topics, templates, apps, integrations, Slack sol
+- ✓ [Toolhouse](https://toolhouse.ai/) — Hosted platform for AI workers that take delegated work by email or chat; no marketplace or ranking for tools,
+- ✓ [Vibe Index](https://www.vibeindex.ai/) — Real-time ranked directory of skills, MCP servers, plugins and marketplaces in the Claude Code ecosystem, with
+- ✓ [Zapier MCP server](https://zapier.com/mcp) — Hosted MCP server that exposes Zapier's app actions and triggers to Claude, ChatGPT, Cursor and other MCP clie
+- ✓ [Zapier MCP templates](https://www.createwith.com/tool/zapier/updates/zapier-launches-100-zapier-mcp-templates-for-action-taking-ai-assistants) — Prebuilt per-task MCP recipes (send a message, update a CRM record, create a task) that let Claude, Cursor or 
+- ✓ [buildwithclaude.com](https://buildwithclaude.com/) — Curated index of Claude Code plugins, agents, commands, skills and hooks, with community stories by authors an
+- ✓ [claudepluginhub](https://www.claudepluginhub.com/) — Directory of Claude Code plugins with component breakdowns (skills, commands, agents, hooks, MCP servers, LSP 
+- ✓ [mcpservers.org](https://mcpservers.org/) — MCP server directory with per-server pages (for example mcpservers.org/servers/evalstate/mcp-hfspace) and mult
+- ✓ [n8n Workflow Templates (community library)](https://n8n.io/workflows/) — Public library of n8n workflow templates, all authored by the community; creators can submit to be featured an
+- · [AWS API MCP Server (AgentCore Marketplace listing)](https://aws.amazon.com/marketplace/pp/prodview-lqqkwbcraxsgw) — AWS's own MCP server on AWS Marketplace that lets assistants run AWS CLI-style operations; deployable to Agent
+- · [Claude Code plugin install and marketplace docs](https://code.claude.com/docs/en/discover-plugins) — Canonical reference for installing, scoping, adding and updating plugins and marketplaces in Claude Code (term
+- · [Flowise Marketplace](https://docs.flowiseai.com) — Built-in library of ready-made Chatflows, AgentflowV2 and tool templates, filterable by badge (POPULAR, NEW), 
+- · [GPT Store (launch categories)](https://openai.com/index/introducing-the-gpt-store) — ChatGPT's store of GPTs with category browsing (DALL-E, writing, research, programming, education, lifestyle),
+- · [Langflow component store](https://docs.langflow.org/getting-started/workspace) — In-app Store in the Langflow workspace where users browse and add components and start projects from templates
+- · [Salesforce AgentExchange](https://developer.salesforce.com/docs/platform/appexchange-install-guide/guide/appexchange-install-whatis.html) — Single Salesforce and Slack marketplace merging AgentExchange, AppExchange and the Slack Marketplace for agent
+- · [Zapier GTM agent skills (open source)](https://www.createwith.com/tool/zapier/updates/zapier-releases-open-source-gtm-agent-skills-built-from-real-team-use-cases) — Open-source GitHub bundle of pre-built agent skills for go-to-market teams, built from Zapier's internal use a
+
+## Per-harness extension hubs (14)
+- ✓ [Cursor Marketplace (plugins and automations)](https://cursor.com/marketplace) — Official Cursor hub for plugins (bundles of rules, skills, sub-agents, commands, MCP servers, hooks) and autom
+- ✓ [Factory plugins and droid marketplaces](https://docs.factory.ai/cli/configuration/plugins) — Factory bundles custom droids (droids/<name>.md subagents), skills, commands, hooks and MCP servers into plugi
+- ✓ [Kilo Code marketplace (kilo.ai/marketplace)](https://kilo.ai/marketplace) — Kilo's marketplace page, but it lists coding plans and apps, not modes, MCP servers or skills.
+- ✓ [Kiro Powers](https://kiro.dev/powers/) — Kiro's catalog of Powers: packages that bundle MCP servers, steering files and hooks so an agent loads a capab
+- ✓ [Trae extension and rules sources](https://www.marscode.com/extension) — Trae installs extensions from the VS Code Marketplace. A third-party listing claims an official Trae Skills MC
+- ✓ [Warp Drive (Workflows, Notebooks, Rules, Prompts)](https://www.warp.dev/drive) — Warp's shared team store for Workflows (parameterized commands), Notebooks, Rules and Prompts. Agent Kits is a
+- ✓ [Windsurf Cascade workflows and rules (docs.windsurf.com)](https://docs.windsurf.com/plugins/cascade/workflows) — Windsurf has no public plugin marketplace found. Workflows are markdown files in .windsurf/workflows/, invoked
+- ✓ [Zed Extensions](https://zed.dev/extensions) — Zed's extension gallery: languages, language servers, MCP servers, agent servers, themes, icon themes, debug a
+- · [Amp (no hub found)](https://ampcode.com/manual) — Amp's manual lists Customize pages (Plugins, Global Plugins and Skills, Skills, MCP) but no public hub, toolbo
+- · [Augment rules (no extension hub found)](https://www.augmentcode.com/changelog/introducing-augment-rules) — Augment rules are files in .augment/rules with Always, Manual and Auto modes. No Augment extension marketplace
+- · [Cline rules (.clinerules) docs](https://docs.cline.bot/features/cline-rules) — Cline rules are markdown files in .clinerules/ or .cline/rules/ (committed to git to share), plus a global Cli
+- · [Codex / ChatGPT plugin directory](https://learn.chatgpt.com/docs/plugins) — One public plugin catalog shared by ChatGPT and Codex. Plugins bundle skills and MCP connections; Codex CLI br
+- · [Gemini CLI extensions gallery](https://geminicli.com/extensions/browse/) — Official gallery of Gemini CLI extensions, which can bundle MCP servers, custom commands, context files, Agent
+- · [opencode plugins ecosystem](https://opencode.ai/docs/plugins/) — opencode plugins are npm packages listed in the plugin array of opencode.json, or local JS/TS files in .openco
+
+## Harnesses (official docs) (27)
+- ✓ [Aider](https://aider.chat/docs/usage/conventions.html) — Open-source terminal pair programmer. Conventions file (e.g. CONVENTIONS.md) loaded read-only via /read or aid
+- ✓ [Claude Code](https://code.claude.com/docs/en/sub-agents) — Anthropic terminal coding agent. Subagents are Markdown files with YAML frontmatter; body is the system prompt
+- ✓ [Codex CLI (OpenAI)](https://learn.chatgpt.com/docs/agent-configuration/agents-md) — OpenAI terminal coding agent. AGENTS.md chain built once per run: global ~/.codex AGENTS.override.md or AGENTS
+- ✓ [Cursor Cloud Agents and BugBot](https://cursor.com/en/changelog/1-0) — Cursor's background agents are now called Cloud Agents: they run in a cloud VM and can open a PR when done. Bu
+- ✓ [Devin Playbooks](https://docs.devin.ai/product-guides/creating-playbooks) — A playbook is a reusable custom system prompt for a repeated task. Body sections: Overview, Procedure (one imp
+- ✓ [Factory droids and plugins](https://docs.factory.com/cli/configuration/plugins) — Factory CLI packages reusable know-how as plugins. A plugin has a .factory-plugin/plugin.json manifest with co
+- ✓ [Gemini CLI (Google)](https://geminicli.com/docs/hooks/) — Google terminal agent. Hooks in settings.json merged from four layers (project .gemini/settings.json, user ~/.
+- ✓ [JetBrains Junie](https://www.jetbrains.com.cn/help/junie/customize-guidelines.html) — JetBrains IDE agent. Guidelines are persistent context added to every task. Lookup order: custom path from pro
+- ✓ [JetBrains Junie subagents and agent skills](https://junie.jetbrains.com/docs/junie-cli-subagents.html) — Junie custom subagents are Markdown files with YAML metadata in .junie/agents/. The main agent picks one by ma
+- ✓ [Kilo Code](https://kilo.ai/docs/customize/custom-subagents) — VS Code and CLI agent (fork lineage of Roo/Cline). Project context in AGENTS.md loaded automatically each sess
+- ✓ [OpenHands](https://docs.openhands.dev/modules/usage/how-to/headless-mode) — Open-source software-agent platform. Headless mode runs with no UI for CI, scripts and batch jobs: openhands -
+- ✓ [Qoder Rules and Skills](https://docs.qoder.com/user-guide/rules) — Project rules live in .qoder/rules/ and apply to the current project; four types: Apply Manually, Model Decisi
+- ✓ [Roo Code (custom modes)](https://roocodeinc.github.io/Roo-Code/features/custom-modes) — VS Code agent. Custom modes defined in custom_modes.yaml (global) or .roomodes (project): slug, name, roleDefi
+- ✓ [Windsurf (Cascade)](https://docs.devin.ai/desktop/cascade/memories) — Windsurf's Cascade agent (docs now on the Devin domain). Two context layers: auto-generated Memories stored in
+- ✓ [goose recipes and sub-recipes](https://goose-docs.ai/docs/guides/recipes/subrecipes) — A goose recipe is a YAML bundle (title, instructions, prompt, extensions, parameters) that runs headless via g
+- ✓ [opencode](https://opencode.ai/docs/agents/) — Open-source terminal agent. Primary agents Build and Plan (switch with Tab); subagents General, Explore and Sc
+- · [Claude for Chrome (Claude in Chrome)](https://support.claude.com/en/articles/12902446-claude-in-chrome-permissions-guide) — Anthropic browser-agent extension. Three approval modes: Manually approve (asks before each action), auto mode
+- · [Cline workflows (.clinerules/workflows)](https://docs.cline.bot/features/slash-commands/workflows/best-practices) — Cline workflows are markdown step-lists stored in .clinerules/workflows/ (examples deploy.md, code-review.md, 
+- · [Cursor (agent rules)](https://cursor.com/docs/context/rules) — Cursor rules add persistent instructions to agent context. Four types: Project Rules (.cursor/rules/*.mdc), Us
+- · [Devin (Knowledge and Skills)](https://docs.devin.ai/product-guides/knowledge) — Devin's Knowledge stores tips, docs and instructions recalled across sessions. Each item has a trigger descrip
+- · [Jules (Google)](https://jules.google/docs) — Google's cloud coding agent. Each task runs in a VM: clones the repo, installs dependencies (optional setup sc
+- · [Kilo Code custom agents (ex-modes)](https://kilo.ai/customize/custom-modes) — Kilo custom modes are now agents: markdown files at .kilo/agents/<name>.md (global ~/.config/kilo/agent/). Fie
+- · [Kiro (steering)](https://kiro.dev/docs/steering/) — AWS-backed Kiro IDE/agent. Steering files are markdown in .kiro/steering/ (workspace) or ~/.kiro/steering/ (gl
+- · [Manus Skills](https://manus.im/docs/features/skills) — Manus skills are file-system modules whose main file is SKILL.md, with scripts and reference assets beside it,
+- · [OpenHands microagents and skills](https://docs.openhands.dev/usage/prompting/microagents-overview) — Three know-how types: repository context (always-on AGENTS.md at root), keyword-triggered skills (fire when a 
+- · [Warp Rules (AGENTS.md / WARP.md)](https://docs.warp.dev/agents/capabilities/rules) — Warp rules are the persistent know-how layer. Project Rules are an AGENTS.md file at repo root or in subdirect
+- · [Zed agent panel](https://zed.dev/docs/ai/agent-panel) — Zed editor agent. Agent Profiles choose which built-in and MCP tools a thread can use; Tool Permissions set ea
+
+## Orchestration frameworks and session orchestrators (4)
+- ✓ [Conductor (Melty Labs)](https://www.conductor.build/) — Mac app that runs several Claude Code and Codex agents at once, each workspace in its own git worktree and bra
+- ✓ [GitHub Agent HQ](https://github.blog/news-insights/company-news/welcome-home-agents/) — GitHub's control surface for assigning one issue to Copilot, Claude or Codex, or to several agents at once to 
+- · [Hierarchical agent teams (LangGraph tutorial)](https://langchain-ai.github.io/langgraph/tutorials/multi_agent/hierarchical_agent_teams/) — Top-level supervisor routes to team supervisors; each team is a subgraph with its own supervisor and workers; 
+- · [Plan-and-execute pattern](https://blog.langchain.com/planning-agents/) — Planner model writes a full step list once; executor runs steps (often cheaper model); replanner revises after
+
+## Playbooks, method packs and prompt banks (3)
+- ✓ [Kiro Specs (AWS Kiro IDE)](https://kiro.dev/docs/specs/) — Spec-first agentic IDE: each feature spec produces requirements.md, design.md and tasks.md, moving through req
+- ✓ [PromptHub (prompthub.us)](https://www.promptlayer.com/glossary/prompthub) — Team prompt-management platform: git-style branches, commits, merge-request reviews, batch evals and side-by-s
+- ✓ [prompts.chat (formerly Awesome ChatGPT Prompts)](https://prompts.chat) — Free open-source community site and repo for sharing, discovering and collecting prompts, with categories and 
+
+## Benchmarks and leaderboards (21)
+- ✓ [Aider polyglot leaderboard](https://aider.chat/docs/leaderboards/edit.html) — 225 hardest Exercism problems in C++, Go, Java, JS, Python, Rust; two attempts with test feedback; scores solv
+- ✓ [Artificial Analysis Coding Agent Index](https://artificialanalysis.ai/agents/coding-agents) — Composite index over whole coding-agent products (Claude Code, Codex, etc.): v1.1 is mean pass@1 across DeepSW
+- ✓ [BenchLM benchmark index (aggregator)](https://benchlm.ai/benchmarks) — Aggregator with per-benchmark snapshots for tau2/tau3, BFCL-like tool sets, MCP-Universe, MCPMark-Verified, We
+- ✓ [Berkeley Function Calling Leaderboard (BFCL)](https://gorilla.cs.berkeley.edu/leaderboard.html) — Function/tool calling accuracy across single-turn, live, multi-turn and agentic (V4) categories; FC (native to
+- ✓ [BrowseComp (OpenAI) leaderboards](https://benchlm.ai/benchmarks/browse-comp) — 1,266 hard-to-find web questions for deep research agents; exact answer required.
+- ✓ [Context Arena (long-context MRCR board)](https://www.datalearner.com/en/benchmarks/context-arena) — Long-context evaluation built on OpenAI's MRCR multi-round coreference: tests retrieval and reasoning across l
+- ✓ [GAIA leaderboard (Hugging Face)](https://huggingface.co/spaces/gaia-benchmark/leaderboard) — 466 general-assistant questions with exact-match answers (300 hidden for test submissions); tests multi-step t
+- ✓ [HAL: Holistic Agent Leaderboard (Princeton)](https://hal.cs.princeton.edu) — Third-party agent evaluation with accuracy and cost by default; compares agents across benchmarks without requ
+- ✓ [LMArena WebDev Arena (and Copilot Arena)](https://web.lmarena.ai/leaderboard) — Two anonymous models build a web app from a user prompt and the user votes; Bradley-Terry scores. Copilot Aren
+- ✓ [LiveMCPBench](https://icip-cas.github.io/LiveMCPBench) — Agents navigating an ocean of 70+ MCP servers and 527 tools to solve live tasks; tests tool retrieval plus exe
+- ✓ [MCP-Universe (Salesforce AI Research)](https://mcp-universe.github.io) — LLM agents on live real-world MCP servers (location, repo, finance, browser, etc.) with execution-based evalua
+- ✓ [OSWorld-Verified / OSWorld 2.0 (XLANG)](https://os-world.github.io) — Computer-use agents on real desktop apps (Ubuntu, Windows, macOS tasks); OSWorld 2.0 is harder (median ~1.6 hu
+- ✓ [SWE-bench Pro (Scale AI leaderboard)](https://scale.com/leaderboard/swe_bench_pro_public) — Harder multi-language SWE task set from Scale; standardized tooling, 250-turn limit. V2 refresh has 642 tasks 
+- ✓ [SWE-bench Verified (official board)](https://swebench.com/verified) — 500-task human-verified subset of GitHub issues; agent must produce a patch that passes hidden tests. Board tr
+- ✓ [Steel.dev Leaderboard registry](https://leaderboard.steel.dev) — Aggregator of agent benchmarks (tau, OSWorld, WebArena, GAIA, BrowseComp, Aider, tool use, AgentBench) that ma
+- ✓ [Vals AI (SkillsBench and tool-use boards)](https://vals.ai/methodology) — Independent evals with a private test split (337 questions in one board, 50 public); covers tool use, multi-tu
+- ✓ [WebArena (and WebArena-Verified) leaderboard](https://leaderboard.steel.dev/leaderboards/webarena) — 812 tasks on self-hosted sites (shopping, forum, GitLab-like, maps, CMS); success judged by end-state of the e
+- · [Epoch AI Benchmarking Hub](https://epoch.ai/benchmarks) — Aggregator that runs its own evals with Inspect and pulls official external results; covers aider polyglot, We
+- · [GAIA-style and tool-use boards on Steel registry: tool use (AgentBench)](https://leaderboard.steel.dev/leaderboards/agentbench.md) — AgentBench multi-environment agent tasks (OS, DB, web shopping, house-holding) with success rate per environme
+- · [Galileo Agent Leaderboard (tool selection)](https://www.galileo.ai/blog/agent-leaderboard) — Agent leaderboard on Hugging Face scoring tool-selection quality across multi-tool tasks.
+- · [MCP-Bench (Hugging Face space)](https://huggingface.co/spaces/mcpbench/mcp-bench) — LLMs wired to 28 live MCP servers (about 250 tools); tasks graded on task fulfillment and tool-use quality.
+
+## Vendor guidance (Anthropic, OpenAI, Google, ...) (26)
+- ✓ [A2A Protocol specification (v1.0)](https://a2a-protocol.org/latest/specification/) — Agent-to-agent protocol spec: Agent Cards for discovery, Task lifecycle, three bindings (JSON-RPC, gRPC, HTTP+
+- ✓ [Agent Skills open specification (agentskills.io)](https://agentskills.io/specification) — Open format for SKILL.md: required name (max 64 chars, lowercase, must match directory) and description (max 1
+- ✓ [Agentic AI Foundation (Linux Foundation)](https://linuxfoundation.org/press/linux-foundation-announces-the-formation-of-the-agentic-ai-foundation) — Neutral foundation that now hosts MCP (Anthropic), goose (Block) and AGENTS.md (OpenAI); platinum members incl
+- ✓ [Amazon Bedrock AgentCore](https://aws.amazon.com/bedrock/agentcore/) — AWS platform for deploying agents: Harness (build), Gateway (connects agents to MCP servers, knowledge bases, 
+- ✓ [Anthropic: Effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) — Two-role harness: an initializer agent sets up environment and feature list, then coding agents make one-featu
+- ✓ [Anthropic: Introducing Contextual Retrieval](https://www.anthropic.com/engineering/contextual-retrieval) — Prepend chunk-specific context before embedding and BM25 indexing; combine embeddings with BM25; rerank.
+- ✓ [Anthropic: Writing effective tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents) — Guidance on building fewer, well-scoped tools for high-impact workflows, returning high-signal and token-effic
+- ✓ [Claude Code best practices (docs)](https://code.claude.com/docs/en/best-practices) — Vendor guide for Claude Code: give Claude a check it can run, explore then plan then code, keep CLAUDE.md shor
+- ✓ [Cloudflare Agents SDK](https://developers.cloudflare.com/agents/) — Agents SDK on Cloudflare: each agent is a durable identity with local SQL storage, real-time connections, sche
+- ✓ [Codex and ChatGPT: Build skills](https://learn.chatgpt.com/docs/build-skills) — OpenAI docs for authoring SKILL.md skills: folder layout, discovery paths, progressive disclosure, explicit vs
+- ✓ [Google ADK (Agent Development Kit) docs](https://adk.dev/) — Google's open agent framework with Agents CLI for scaffold, build, test, evaluate and deploy; graph workflows 
+- ✓ [Google Cloud: Agent Garden (Gemini Enterprise Agent Platform)](https://docs.cloud.google.com/gemini-enterprise-agent-platform/build/agent-garden) — Curated library of prebuilt agent samples (RAG template etc.) with GitHub source, inside the Gemini Enterprise
+- ✓ [Google Developers Blog: A2A, a new era of agent interoperability](https://developers.googleblog.com/en/a2a-a-new-era-of-agent-interoperability/) — Launch of the Agent2Agent protocol for agents from different vendors to collaborate without exposing internal 
+- ✓ [Microsoft 365 Copilot: extending with plugins](https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/) — Microsoft 365 Copilot extensibility hub: plugin lifecycle from planning, build and test, through publish and g
+- ✓ [Microsoft Agent Framework overview](https://learn.microsoft.com/en-us/agent-framework/overview/) — Microsoft's successor to Semantic Kernel and AutoGen: four areas (Agents, Harness Agent, Workflows, Integratio
+- ✓ [Microsoft Foundry Agent Service overview](https://learn.microsoft.com/en-us/azure/foundry/agents/overview) — Managed agent platform with three types (prompt agents, voice prompt agents, hosted agents) plus Toolboxes tha
+- ✓ [Mistral Agents API](https://docs.mistral.ai/capabilities/agents/) — Mistral agents with stored conversation state across chats, built-in connectors (code execution, web search, i
+- ✓ [OpenAI Cookbook: agent guides (SDK, evals, Codex)](https://developers.openai.com/cookbook) — Index of OpenAI cookbook examples on agents: Agents SDK sessions and memory, reliable agents with compaction, 
+- ✓ [Vercel: skills CLI and skills.sh (open agent skills ecosystem)](https://vercel.com/changelog/introducing-skills-the-open-agent-skills-ecosystem) — skills CLI (npx skills add <package>) installs SKILL.md packages into many coding agents; skills.sh is a direc
+- ✓ [Windows MCP: on-device agent registry (ODR)](https://learn.microsoft.com/en-us/windows/ai/mcp/overview) — Windows-level MCP support: an on-device registry where agents discover MCP servers, with containment, per-agen
+- ✓ [smolagents documentation (Hugging Face)](https://huggingface.co/docs/smolagents/index) — Hugging Face docs for a minimal agent library with CodeAgent (actions as Python), ToolCallingAgent (JSON tool 
+- · [Microsoft Agent Framework](https://devblogs.microsoft.com/dotnet/introducing-microsoft-agent-framework-preview/) — Open-source .NET and Python SDK, successor to Semantic Kernel and AutoGen: graph-based workflows with checkpoi
+- · [OpenAI Agents SDK: Guardrails](https://openai.github.io/openai-agents-python/guardrails/) — Agents SDK reference for input, output and tool guardrails with tripwires that halt the run.
+- · [OpenAI Agents SDK: Handoffs and agents-as-tools](https://openai.github.io/openai-agents-python/handoffs/) — Agents SDK page on delegating between agents: handoffs transfer the conversation; Agent.as_tool nests a specia
+- · [Vercel AI SDK: Agents overview](https://ai-sdk.dev/docs/agents/overview) — AI SDK agent abstraction: ToolLoopAgent (recommended for custom agents) and HarnessAgent (runs preconfigured h
+- · [xAI Grok agent tools (built-in server-side tools)](https://docs.x.ai/docs/guides/tools/overview) — xAI API tools that run on xAI's servers: Web Search, X Search, Code Interpreter, Image Generation, Collections
+
+## Communities, newsletters, media (10)
+- ✓ [AI Engineer YouTube (@aidotengineer)](https://www.youtube.com/@aidotengineer) — Talk recordings from AI Engineer events.
+- ✓ [Ben's Bites](https://www.bensbites.com) — Twice-weekly AI news and tools newsletter (Tue/Thu).
+- ✓ [Claude Developer Discord (official Anthropic)](https://discord.com/invite/6PPFFzqPDZ) — Official Claude community Discord linked from claude.com/community: real-time help, project sharing, Claude Co
+- ✓ [Cursor Discord (community-led)](https://discord.com/servers/cursor-1074847526655643750) — Community-led Cursor Discord (listing calls it official-community).
+- ✓ [HN: qm - Multiplayer agent harness for work](https://news.ycombinator.com/item?id=49126604) — Show-style launch of a multiplayer agent harness.
+- ✓ [Model Context Protocol Discord](https://discordbotlist.com/servers/model-context-protocol-1312302100125843476) — Community-maintained MCP Discord; no official MCP-protocol Discord confirmed.
+- ✓ [Simon Willison's Weblog and newsletter](https://simonwillison.net) — Long-running blog on agents, skills, LLM tooling; paid sponsors-only monthly briefing.
+- ✓ [The Pragmatic Engineer (agents coverage)](https://newsletter.pragmaticengineer.com) — Gergely Orosz's newsletter; agent deep dives and Pulse issues (paywalled).
+- ✓ [r/ClaudeCode](https://www.reddit.com/r/ClaudeCode/) — Claude Code-specific subreddit.
+- ✓ [r/LocalLLM / r/Anthropic / r/claude](https://www.reddit.com/r/Anthropic/) — Adjacent subs: r/LocalLLM ~243k, r/Anthropic ~227k, r/claude ~195k.
+
+## Harnesses, evals and media (blind map) (18)
+- ✓ [Aider polyglot leaderboard](https://aider.chat/docs/leaderboards/) — Aider's model leaderboard on 225 Exercism problems across C++, Go, Java, JS, Python, Rust, measured through th
+- ✓ [Amp (Amp Frontier Corp, ampcode.com)](https://ampcode.com) — Terminal-first coding agent with sub-agents: Oracle (deep reasoning and review), Librarian (cross-repo GitHub 
+- ✓ [Anthropic: Effective context engineering for AI agents](https://anthropic.com/engineering/effective-context-engineering-for-ai-agents) — Anthropic engineering post framing context engineering as the next step after prompt engineering: curate the t
+- ✓ [Anthropic: Equipping agents for the real world with Agent Skills](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills) — Anthropic engineering post introducing Agent Skills: folders with SKILL.md plus scripts that load in layers (m
+- ✓ [Anthropic: Harness design for long-running application development](https://anthropic.com/engineering/harness-design-long-running-apps) — Anthropic Labs post (Prithvi Rajasekaran) on a generator + evaluator multi-agent harness for multi-hour app bu
+- ✓ [Anthropic: How we built our multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system) — Anthropic post on a lead agent (Opus 4) with parallel Sonnet 4 subagents, with lessons on delegation, effort s
+- ✓ [Daily.dev: best Discord servers for developers](https://daily.dev/blog/best-discord-servers-for-developers/) — Roundup of developer Discords, including Cursor's community and the Anthropic Developers Discord.
+- ✓ [Epoch AI benchmarking hub](https://epoch.ai/benchmarks/aider-polyglot) — Independent benchmark tracker that re-runs evals under standard conditions (Inspect framework) rather than jus
+- ✓ [Latent Space (newsletter + podcast)](https://www.latent.space) — AI engineering newsletter and podcast by swyx and Alessio Fanelli, with daily news roundups and a weekly LLM P
+- ✓ [METR time horizons](https://metr.org/time-horizons/) — METR's measure of the human-expert task length at which an agent succeeds with a given reliability (50% and 80
+- ✓ [Morph Terminal-Bench 2.0 and SWE-bench Pro explainers](https://www.morphllm.com/terminal-bench-2) — Third-party leaderboard explainers for Terminal-Bench 2.0 and SWE-bench Pro, with harness-versus-model notes.
+- ✓ [OpenAI: Agentic AI Foundation (AAIF) and AGENTS.md](https://openai.com/index/agentic-ai-foundation/) — Announcement of the Linux Foundation's Agentic AI Foundation; AGENTS.md (per-repo agent instructions) donated 
+- ✓ [SWE-Bench Pro public leaderboard (Scale Labs)](https://labs.scale.com/leaderboard/swe_bench_pro_public) — Scale's standardized public leaderboard for SWE-Bench Pro, run with one shared scaffold so it isolates model c
+- ✓ [SWE-bench official leaderboards](https://www.swebench.com/) — Official SWE-bench site with leaderboards for Verified, Multimodal, Multilingual, Lite and Full, plus submissi
+- ✓ [Simon Willison: Agentic Engineering Patterns guide](https://simonwillison.net/guides/agentic-engineering-patterns/) — Living guide of chapter-style patterns for working with coding agents (principles, Git with agents, subagents,
+- ✓ [Terminal-Bench 4.0 on Snorkel (Open Benchmarks)](https://snorkel.ai/leaderboard/terminal-bench-4-0/) — Snorkel-hosted Terminal-Bench 4.0 leaderboard, a maintenance release (66 tasks after removing 8 and revising 2
+- ✓ [r/ClaudeAI and r/ClaudeCode (Reddit communities)](https://gummysearch.com/r/ClaudeCode) — Reddit: r/ClaudeAI (general Claude) and r/ClaudeCode (unofficial Claude Code community: usage limits, session 
+- ✓ [tbench.ai leaderboard (Terminal-Bench)](https://tbench.ai/leaderboard) — Official Terminal-Bench leaderboard; currently presents Terminal-Bench 4.0 rows.
+
+## Project websites (from repo homepages) (54)
+- ✓ [Activepieces](https://www.activepieces.com) — Activepieces homepage: AI agents, MCP and workflow automation.
+- ✓ [Addy Osmani agent-skills website](https://skills.addy.ie) — Project website for Addy Osmani agent-skills (homepage field of https://github.com/addyosmani/agent-skills).
+- ✓ [Agentic Awesome Skills website](https://aaskills.tech/) — Project website for Agentic Awesome Skills (homepage field of https://github.com/sickn33/agentic-awesome-skill
+- ✓ [Apify MCP (mcp.apify.com)](https://mcp.apify.com) — Hosted Apify MCP endpoint and configuration page; connect by URL from Claude.ai, VS Code, Cursor, Claude Code.
+- ✓ [Archify website](https://archify.si) — Project website for Archify (homepage field of https://github.com/tt-a1i/archify).
+- ✓ [Awesome LLM Apps website](https://www.theunwindai.com) — Project website for Awesome LLM Apps (homepage field of https://github.com/Shubhamsaboo/awesome-llm-apps).
+- ✓ [CC Switch website](https://ccswitch.io) — Project website for CC Switch (homepage field of https://github.com/farion1231/cc-switch).
+- ✓ [Chrome DevTools for agents](https://developer.chrome.com/docs/devtools/agents) — Official Chrome docs page for the agents variant of DevTools (the MCP server and CLI).
+- ✓ [Context7 Platform](https://context7.com) — Context7 platform homepage: hosted up-to-date code docs for LLMs and editors.
+- ✓ [CowAgent website](https://cowagent.ai) — Project website for CowAgent (homepage field of https://github.com/zhayujie/CowAgent).
+- ✓ [FastAPI-MCP docs](https://fastapi-mcp.tadata.com/) — Documentation for fastapi_mcp, with examples and advanced usage. Built by Tadata, which also sells a hosted ve
+- ✓ [FastMCP docs](https://gofastmcp.com) — FastMCP documentation site: servers, clients, apps, deployment.
+- ✓ [Graphify website](https://www.graphify.com) — Project website for Graphify (homepage field of https://github.com/Graphify-Labs/graphify).
+- ✓ [MCP Python SDK docs](https://py.sdk.modelcontextprotocol.io/) — Official docs for the Python SDK: get started, what is new in v2, API reference, migration guide.
+- ✓ [MCP TypeScript SDK docs (v2)](https://ts.sdk.modelcontextprotocol.io/v2) — Official docs for the TypeScript SDK v2.
+- ✓ [MCP for Blender](https://www.mcp-for-blender.com/) — Project site for the Blender MCP add-on.
+- ✓ [Marketing skills website](https://marketing-skills.com) — Project website for Marketing skills (homepage field of https://github.com/coreyhaines31/marketingskills).
+- ✓ [NVIDIA SkillSpector docs](https://docs.nvidia.com/skills/scanning-agent-skills) — NVIDIA docs guide on scanning agent skills before install, how to read a report, and how to gate installs; par
+- ✓ [OmO (oh-my-openagent) website](https://omo.dev) — Project website for OmO (oh-my-openagent) (homepage field of https://github.com/code-yeongyu/oh-my-openagent).
+- ✓ [OpenDesign website](https://open-design.ai) — Project website for OpenDesign (homepage field of https://github.com/nexu-io/open-design).
+- ✓ [OpenMontage website](https://www.openmontage.video/) — Project website for OpenMontage (homepage field of https://github.com/calesthio/OpenMontage).
+- ✓ [Paperclip website](https://paperclip.ing) — Project website for Paperclip (homepage field of https://github.com/paperclipai/paperclip).
+- ✓ [Planning with Files landing page](https://gilded-laurel-c7nj.here.now/) — Hosted landing page for planning-with-files, the persistent planning skill with a per-turn hook.
+- ✓ [Ponytail website](https://ponytail.dev) — Project website for Ponytail (homepage field of https://github.com/DietrichGebert/ponytail).
+- ✓ [QwenPaw docs](http://qwenpaw.agentscope.io/) — Documentation site for QwenPaw, the personal agent runtime (pip install qwenpaw).
+- ✓ [REA (Reverse Engineer Anything) website](https://rea.tools) — Project website for REA (Reverse Engineer Anything) (homepage field of https://github.com/morluto/rea).
+- ✓ [Scientific Agent Skills website](https://arxiv.org/abs/2609.00065) — Project website for Scientific Agent Skills (homepage field of https://github.com/K-Dense-AI/scientific-agent-
+- ✓ [Serena docs](https://oraios.github.io/serena) — Serena documentation site: tools, configuration, agent interfaces, usage.
+- ✓ [SkillOpt project page](https://microsoft.github.io/SkillOpt/) — Project page for SkillOpt with its explainer video linked from the README.
+- ✓ [Tyk MCP Gateway](https://tyk.io/tyk-mcp-gateway/) — Tyk product page for the MCP gateway (governance layer for MCP servers).
+- ✓ [Understand-Anything website](https://understand-anything.com/) — Project website for Understand-Anything (homepage field of https://github.com/Egonex-AI/Understand-Anything).
+- ✓ [Unity MCP docs](https://coplaydev.github.io/unity-mcp/) — Docs site for unity-mcp.
+- ✓ [awesome-design-md website](https://getdesign.md/) — Project website for awesome-design-md (homepage field of https://github.com/VoltAgent/awesome-design-md).
+- ✓ [awesome-openclaw-skills website](https://clawskills.sh/) — Project website for awesome-openclaw-skills (homepage field of https://github.com/VoltAgent/awesome-openclaw-s
+- ✓ [claude-mem website](https://claude-mem.ai) — Project website for claude-mem (homepage field of https://github.com/thedotmack/claude-mem).
+- ✓ [codebase-memory-mcp docs](https://deusdata.github.io/codebase-memory-mcp/) — Project website and docs for codebase-memory-mcp.
+- ✓ [diagram-design website](https://diagramdesign.dev) — Project website for diagram-design (homepage field of https://github.com/cathrynlavery/diagram-design).
+- ✓ [humanizer website](https://skills.sh/blader/humanizer) — Project website for humanizer (homepage field of https://github.com/blader/humanizer).
+- ✓ [n8n-mcp](https://www.n8n-mcp.com/) — Project site for n8n-mcp: hosted dashboard (100 tool calls/day free) and setup.
+- ✓ [taste-skill website](https://tasteskill.dev) — Project website for taste-skill (homepage field of https://github.com/Leonxlnx/taste-skill).
+- · [AionUi website](https://www.aionui.com) — Product site for AionUi, the desktop Cowork app over Claude Code, Codex and 20+ CLI agents.
+- · [Claude Code plugins docs](https://code.claude.com/docs/en/plugins) — Anthropic's official docs page for Claude Code plugins, which the marketplace repo points to as its homepage.
+- · [Google Workspace developers site](https://developers.google.com/workspace) — Google's developer docs for Workspace APIs, the discovery source that the gws CLI reads from.
+- · [JCodesMore Discord (homepage)](https://dsc.gg/jcodesmore) — Discord invite listed as the homepage of the AI website cloner template; a community link, not a website.
+- · [NanoClaw website](https://nanoclaw.dev) — Product site for NanoClaw, the container-isolated agent assistant; docs at docs.nanoclaw.dev.
+- · [OfficeCLI website](https://officecli.ai) — Product site for OfficeCLI; the agent install file is served at officecli.ai/SKILL.md.
+- · [Official Skills directory](https://officialskills.sh/) — Companion directory site for VoltAgent's awesome-agent-skills list of official agent skills.
+- · [ProductCompass PM Skills article](https://www.productcompass.pm/p/pm-skills-2-red-team-ship) — Article on ProductCompass introducing PM Skills 2, listed as the repo homepage.
+- · [Seth Hobson (wshobson) homepage](https://sethhobson.com) — Author's personal homepage, listed as the repo homepage for wshobson/agents; not a product site.
+- · [Stitch DESIGN.md spec](https://stitch.withgoogle.com/docs/design-md/specification) — Google Stitch docs page for the DESIGN.md format specification.
+- · [Vercel agent-skills on skills.sh](https://skills.sh/vercel-labs/agent-skills) — skills.sh page for Vercel's official agent-skills repo, with install counts.
+- · [agency-agents experts directory](https://ao.aiolaola.com/experts) — Persona browser site for the agency-agents expert roles.
+- · [agents.md website](https://agents.md) — Website for the AGENTS.md open format.
+- · [context-mode website](https://context-mode.com) — Product site for context-mode, the context-window optimiser plugin.
+
+## Long tail (blind probes) (118)
+- ✓ [AI Agents Directory (ai-agents-directory.com)](https://ai-agents-directory.com) — Directory for finding, comparing and implementing AI agent tools, aiming to be a complete resource centre for 
+- ✓ [AI Tools Atlas agent marketplace hub](https://aitoolsatlas.ai) — Agent marketplace hub with a changelog and comparison pages (e.g. Roo Code vs Continue).
+- ✓ [API Tracker (apitracker.io)](https://apitracker.io) — API directory with an MCP servers section
+- ✓ [AWS Marketplace](https://aws.amazon.com/marketplace) — Enterprise marketplace listing AI agents and templates alongside Google Cloud Marketplace
+- ✓ [Agent Skills (agent-skills.cc)](https://agent-skills.cc) — Chinese-language directory of hand-picked AI skills for Claude Code, Codex and Cursor, with 12 categories and 
+- ✓ [Agent Skills cross-platform search (feedbagel listing)](https://feedbagel.com/post/agent-skills-directory-cross-platform-search-for-ai-agent-capabilities) — Cross-platform search tool for agent skills across 30+ platforms including Claude Code, Cursor and Copilot
+- ✓ [AgentSkills.codes](https://agentskills.codes) — Skills directory of installable agent skills split into categories
+- ✓ [Aider LLM Leaderboards](https://aider.chat) — Official aider leaderboard: Polyglot benchmark of 225 Exercism exercises across six languages with cost per ru
+- ✓ [AllClaw](https://allclaw.org) — Entry pages for agent tools and skills, such as vercel-skills
+- ✓ [Analytics Vidhya GitHub skill repos](https://analyticsvidhya.com) — Article pointing to the top GitHub repositories for free Claude Code skills (1000+).
+- ✓ [Artificial Analysis Coding Agent Index](https://artificialanalysis.ai) — Primary index combining DeepSWE, Terminal-Bench v2 and SWE-Atlas-QnA into a coding-agent score.
+- ✓ [Awesome Claude Code guide (ClaudeFast)](https://claudefa.st) — Blog that lists 11 curated Claude Code lists worth bookmarking.
+- ✓ [ClaudeLog](https://claudelog.com) — Claude Code guide site with a best-MCPs FAQ and curated lists of awesome MCP servers and Claude prompts
+- ✓ [Cline MCP Marketplace](https://cline.bot) — In-app MCP marketplace inside Cline (Extensions button), backed by a GitHub catalog; one-click install with gu
+- ✓ [CodeSOTA](https://www.codesota.com) — Leaderboard aggregator for Terminal-Bench 2.0 and agentic coding benchmarks.
+- ✓ [Codex CLI plugin blog (danielvaughan)](https://codex.danielvaughan.com) — Third-party blog covering the Codex plugin marketplace, discovery UI and skills ecosystem.
+- ✓ [Composio toolkits](https://composio.dev) — Catalog of toolkits (grouped tools per service) with auth types and a request-a-toolkit form.
+- ✓ [Enterprise DNA cursor directories](https://enterprisedna.co) — Directory pages for cursor rules and a Cursor Rules Starter Pack of .cursor/rules files.
+- ✓ [Etropo marketing MCPs](https://etropo.com) — Directory of MCP servers aimed at marketers
+- ✓ [Geekflare: Where to Submit Your MCP Server](https://geekflare.com) — Listicle of MCP directories and submission routes (official registry, awesome-lists, third-party directories, 
+- ✓ [Glama](https://glama.ai) — MCP server directory with security, license and quality scores (curated seal of approval) and a public API
+- ✓ [God of Prompt](https://godofprompt.ai) — Prompt library with an Agent System Prompts category, empty at crawl time
+- ✓ [Horadecodar: awesome skill lists and curation](https://horadecodar.com.br) — Portuguese article asking who curates the awesome skill lists and what curation guarantees.
+- ✓ [LobeHub MCP Marketplace](https://lobehub.com/mcp) — MCP marketplace with ratings and Japanese-language UI, part of the LobeHub agent platform
+- ✓ [MCP Index (hunted.space listing)](https://hunted.space/product/metorial/launches/mcp-index) — Searchable directory of over 5,000 open source MCP servers, categorized
+- ✓ [MCP.so (Chinese mirror on ai-bot.cn)](https://ai-bot.cn/mcp-so/) — Chinese AI-tool navigation site whose listing page presents MCP.so, a directory and hosting platform for MCP s
+- ✓ [MCPHub (chatgate.ai)](https://chatgate.ai/post/mcphub) — MCP catalog that is itself an MCP server, so a coding agent can search it directly
+- ✓ [MCPServer.dev](https://mcpserver.dev) — MCP server directory with a web-form submission
+- ✓ [MCPize](https://mcpize.com) — MCP marketplace that needs its own submission, separate from the registries that sync
+- ✓ [MDSkill](https://hunted.space/product/mdskill) — Free open directory of agent skill files sourced from GitHub, described as security-audited, for Claude Code, 
+- ✓ [MessengerX](https://www.nemovideo.com/alternative/messengerx) — AI chatbot marketplace where creators can monetise bots through a Creator Portal, listed as a Character.AI-sty
+- ✓ [Mintlify Claude Skills library](https://mintlify.com/npow/claude-skills) — Library of 20+ slash-command workflow skills across development, research, visualization and debugging
+- ✓ [ModelScope MCP Square (魔搭 MCP广场)](https://modelscope.cn) — ModelScope (Alibaba-linked Chinese model community) MCP marketplace where MCP services are listed, hosted or s
+- ✓ [NexScope SkillHub](https://www.nexscope.ai) — Launch of a SkillHub collection of AI agent skills gathered in one place, announced on the company blog
+- ✓ [OpenAI Codex plugins directory](https://developers.openai.com) — Official Codex plugin browser: Codex app Plugins page and CLI /plugins browser grouped by marketplace.
+- ✓ [OpenRouter rankings](https://openrouter.ai) — Usage rankings by tokens for models and apps, including programming and coding-app views; Data API under CC BY
+- ✓ [SSOJet coding agents compared](https://ssojet.com) — Comparison article ranking 12 AI coding agents with benchmark notes and CLI ranking.
+- ✓ [SafeMCP (Product Hunt)](https://www.producthunt.com/p/safemcp) — Free searchable MCP directory; checks each server actually implements MCP and scores metadata 0-100
+- ✓ [Skillbay](https://skillbay.sh) — Newer skill listing site focused on a smaller set of human-curated skills rather than bulk submissions
+- ✓ [SkillsCat](https://hunted.space/product/skillscat) — Open-source directory and platform for discovering, sharing and managing agent skills; launched on Product Hun
+- ✓ [Skillsmith](https://skillsmith.app) — Registry for sharing and installing agent skills across teams, with security scanning and usage tracking; work
+- ✓ [Ten best agent skills 2026 (ODSC)](https://opendatascience.com) — Editorial list of ten agent skills to add to an agent in 2026.
+- ✓ [Terminal-Bench (tbench.ai)](https://tbench.ai) — Official Terminal-Bench leaderboard and docs for terminal-based coding agent runs.
+- ✓ [Towards AI: 8 best MCP marketplaces](https://pub.towardsai.net) — Article comparing eight MCP marketplaces.
+- ✓ [Zapier MCP](https://zapier.com) — Hosted MCP server giving AI clients access to Zapier's app catalog; connect by URL, sign in through the browse
+- ✓ [aixploria.com](https://www.aixploria.com) — AI tool site with a best-MCP-servers list and a free MCP directory
+- ✓ [mkinf Registry](https://mkinf.io) — MCP registry named in a directory listicle
+- · [AI Agent Index](https://theaiagentindex.com) — Directory and guide hub for AI agents, including how to build and sell an agent
+- · [AI Agent Store (aiagentstore.ai)](https://aiagentstore.ai) — Listing pages for AI agents and MCP-style tools, including awesome-mcp-servers
+- · [AI Skillstore](https://skillstore.io) — Curated hub for Claude Code and Codex skills with automated checks for dangerous code, file access, network ca
+- · [AI Tools List / AiIndigo](https://aiindigo.com) — General AI tool directory organized by function plus comparison and review pages.
+- · [AIBase MCP Directory](https://mcp.aibase.com) — Curated MCP server list with a platform submission flow
+- · [Agensi](https://www.g2.com/sellers/agensi) — Marketplace where developers buy, sell and install SKILL.md skills for Claude Code, Codex CLI, Cursor, Gemini 
+- · [Agent Skills Finder](https://agentskillsfinder.com) — Public directory to find skills by category, tag or keyword, with ratings and reviews.
+- · [AgentIndexed](https://agentindexed.com) — Developer hub linking API references and code examples for agents; relies on community ratings.
+- · [Agentpedia](https://agentpedia.codes) — Catalog of MCP servers and skills with per-item pages, including awesome-mcp-servers mirrors
+- · [Agentverse (Fetch.ai)](https://agentverse.ai) — Fetch.ai's marketplace and hub where registered agents are listed and discoverable through an Almanac, with hi
+- · [Alibaba Cloud Skills Portal (Agent Skills docs)](https://help.aliyun.com) — Alibaba Cloud help portal section on Agent Skills (SKILL.md packages with name and description metadata and pr
+- · [Anthropic-style agent template sites (sub-agents)](https://x-cmd.com) — Install page for the awesome claude code subagents collection, one command to add.
+- · [Claude Code Guides](https://claudecodeguides.com) — Guide site with a 2026 plugin marketplace guide and a skills directory where-to-find page.
+- · [Claude Code Plugin Hub (feedbagel)](https://feedbagel.com) — Navigation site that curates and compares Claude Code plugins and plugin marketplaces.
+- · [Claude Code resource hub (claudcod)](https://claudcod.com) — Resource site with a plugins ecosystem page for Claude Code.
+- · [Claude Connectors Directory](https://claude.com) — Anthropic's catalog of MCP connectors that work across Claude.ai, Desktop, Mobile, Claude Code and Cowork; bro
+- · [ClawMarket](https://claw-market.xyz) — Agent-to-agent marketplace: free skills open, paid skills settled in USDC on Base via x402.
+- · [Codaone skills pages](https://www.codaone.ai) — Skill pages aggregating listings such as the cursor-directory and clawhub skills
+- · [Continue Hub](https://continue.dev) — In-editor MCP marketplace and server templates; team-wide shared assistant config.
+- · [Descope MCP directories guide](https://descope.com) — Blog comparing MCP server directories for developers.
+- · [Director.run](https://director.run) — MCP directory-style listing named in a submission tracker
+- · [Factory benchmark leaderboards](https://docs.factory.ai) — Docs page with a live Terminal Bench leaderboard link and benchmark notes.
+- · [Fast.io agent resources](https://fast.io) — Resource guides on top AI agent marketplaces and Claude Code plugin development.
+- · [G2 ClawHub listing](https://ai.g2.com) — Review-site listing of ClawHub as a marketplace tool.
+- · [Gemini CLI extensions gallery](https://geminicli.com) — Official docs and browsable gallery for Gemini CLI extensions that bundle MCP servers, commands, context files
+- · [Get ClawKit](https://getclawkit.com) — Skill listing pages for ClawHub-style skills (official and community).
+- · [Gradually: Codex skills](https://gradually.ai) — Codex skills directory page.
+- · [HOL Registry (Claude Code plugins)](https://hol.org) — Claude Code plugin registry with trust scores, security signals and install commands.
+- · [Handson AI: Building agents on Claude](https://handsonai.info) — Platform guide to building Claude agents, including subagent setup.
+- · [Indie Hackers (agent skills marketplace post)](https://www.indiehackers.com) — Founder community where makers post launches, including a post by a builder of an open marketplace for AI agen
+- · [JustCall AI Agent Directory](https://justcall.io) — Category directory of AI agents including an AI agent marketplace section
+- · [KDnuggets: top 5 agent skill marketplaces](https://www.kdnuggets.com) — Editorial list of the top five agent skill marketplaces.
+- · [Kilo Code marketplace](https://kilo.ai) — App-store-style catalog of MCP servers, agents and skills; ratings, download counts, one-click install.
+- · [LangChain Hub (LangSmith)](https://smith.langchain.com) — Hosted prompt hub inside LangSmith for uploading, browsing and pulling prompts; agents and chains said to foll
+- · [MCP Hunt](https://mcphunt.com) — MCP server directory named in a directory-of-directories listicle
+- · [MCP Server Directory (mcpserverdirectory.org)](https://mcpserverdirectory.org) — MCP server directory with a web-form submission
+- · [MCP Server Finder](https://mcpserverfinder.com) — MCP server directory; submission handled on-site, named in directory listicles
+- · [MCP-Archive](https://mcp-archive.com) — Community-maintained MCP catalog with search by capability, category and tag, plus a submit form
+- · [MCP.ing](https://mcp.ing) — MCP server finder; submission instructions on site, named in a directory listicle
+- · [NavTools](https://navtools.ai) — AI tool directory with a listing for agentskill.sh
+- · [Neura Market AI tools directory](https://neura.market) — AI tools directory with a listing for Cursor Directory
+- · [Official MCP Registry (modelcontextprotocol.io)](https://modelcontextprotocol.io) — Official community-run MCP server registry that many clients and directories read from
+- · [OpenSkillIndex](https://openskillindex.com) — Index of agent skill pages mirrored from GitHub repos, one page per skill
+- · [OpenTools (opentools.ai)](https://opentools.ai) — AI tools and MCP directory listed in a directory listicle
+- · [Peerlist (project listings for MCP directories)](https://peerlist.io) — Developer profile and project-launch network where MCP directory tools such as AllMCPs post their listings
+- · [Product Hunt](https://www.producthunt.com) — Launch venue where skill and MCP directories announce themselves (SkillsCat, SafeMCP, Claude Market, Skillseli
+- · [PromptHero](https://prompthero.com) — Prompt discovery and sharing site for image models (Midjourney, Stable Diffusion, ChatGPT).
+- · [QVeris MCP registry comparison guide](https://qveris.ai) — Guide that compares MCP registries by directory, hosted, gateway and routing
+- · [Remote OpenClaw](https://www.remoteopenclaw.com) — Blog and directory that ranks MCP server directories, including itself first
+- · [Roo Code marketplace (docs)](https://docs.roocode.com) — In-editor marketplace for community MCPs and Modes with single-click install; Roo Code reportedly sunset in Ap
+- · [Sharedcontext.ai](https://sharedcontext.ai) — Catalog of skills, plugins and MCP servers with a skill-get command that searches third-party marketplaces bef
+- · [Shyft MCP directory](https://www.shyft.ai/mcp/mcp-directory) — MCP server directory page from Shyft
+- · [Skillselion](https://skillselion.com) — Ranked directory of skills, MCP servers and plugins for Claude Code, Codex, Grok and Cursor; entries sorted by
+- · [SourcePulse](https://www.sourcepulse.org) — Index of GitHub AI agent projects with stars and summaries, including awesome-claude-code-agents
+- · [Stork (Cursor marketplace)](https://www.stork.ai) — Third-party listing and guide for the Cursor marketplace
+- · [StudioMeyer MCP marketplaces 2026](https://studiomeyer.io) — 2026 guide to MCP marketplaces.
+- · [Tessl registry](https://tessl.io) — Skill registry with browse pages per GitHub repo and an npx tessl install command
+- · [Tomevault](https://tomevault.io) — Indexer and mirror that republishes GitHub agent-tool repos, such as VoltAgent awesome-claude-code-subagents, 
+- · [ToolHub (EveryDev)](https://everydev.ai) — Self-hosted open-source platform that turns console scripts into agent tools, with MCP support and an API.
+- · [ToolNavs](https://toolnavs.com) — Tool navigation site with localized pages (de and others) listing Claude skill tools
+- · [WikiDocs (Korean MCP and Claude Code guides)](https://wikidocs.net) — Korean-language book and guide platform carrying an MCP introduction with a popular servers list (GitHub, Post
+- · [Zimaspace AI agent skills June 2026](https://shop.zimaspace.com) — Sponsored-style monthly list of recommended agent skills, ranked by GitHub stars and workflow value.
+- · [agentskill.work](https://agentskill.work) — Chinese-language Claude Skill site with topic pages and a Chinese Awesome Agent Skills list
+- · [agentskills.so](https://agentskills.so) — Skills listing page, sponsored by a directory-submission service
+- · [claudemarketplaces.com](https://claudemarketplaces.com) — Independent directory of Claude Code skills, MCP servers and marketplaces with category browse and copy-paste 
+- · [ctxly Agent Directory](https://ctxly.com) — Directory built for agents: each service has a skill.md and a JSON endpoint of services.
+- · [hunted.space](https://hunted.space) — Launch-directory aggregator listing agent-skill and MCP products such as SkillsCat, MDSkill, ClawHub and Claud
+- · [myClaude (PeerPush listing)](https://peerpush.com/p/myclaude) — Marketplace to discover, share and monetize Claude Code assets; freemium with web, CLI and API access
+- · [npxskills](https://npxskills.xyz) — Curated skills directory where each skill is built in-house or vetted and ready to run.
+- · [skills.cat](https://skills.cat) — Skill directory with pages for individual agent-skill repos.
+- · [upd.dev skills](https://upd.dev) — Skill pages mirroring Anthropic's skills repo with install guidance
