@@ -90,7 +90,7 @@ def run(cfg, task, key, fork=None):
     if cfg.startswith("cc-"):
         model = {"cc-fable": "claude-fable-5-1", "cc-fable-lean": "claude-fable-5-1", "cc-fable-medium": "claude-fable-5-1",
                  "cc-opus-xhigh": "claude-opus-5-5", "cc-opus-high": "claude-opus-5-5", "cc-opus-medium": "claude-opus-5-5", "cc-opus-low": "claude-opus-5-5",
-                 "cc-opus-lean": "claude-opus-5-5", "cc-haiku": "claude-haiku-4-5", "cc-haiku55": "claude-haiku-5-5", "cc-h55-advisor": "claude-haiku-5-5", "cc-h55-brain": "claude-haiku-5-5", "cc-h55-hire": "claude-haiku-5-5", "cc-opus": "claude-opus-5-5"}[cfg]
+                 "cc-opus-lean": "claude-opus-5-5", "cc-haiku": "claude-haiku-4-5", "cc-haiku55": "claude-haiku-5-5", "cc-h55-advisor": "claude-haiku-5-5", "cc-h55-brain": "claude-haiku-5-5", "cc-h55-hire": "claude-haiku-5-5", "cc-opus": "claude-opus-5-5", "cc-sonnet55": "claude-sonnet-5-5", "cc-s55-advisor": "claude-sonnet-5-5"}[cfg]
         cmd = ["claude", "-p", t["prompt"], "--model", model, "--output-format", "json", "--permission-mode", "bypassPermissions"]
         for lvl in ("xhigh", "high", "medium", "low"):
             if cfg in (f"cc-opus-{lvl}", f"cc-fable-{lvl}"):

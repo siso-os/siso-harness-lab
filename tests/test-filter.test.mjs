@@ -8,7 +8,7 @@ import path from "node:path";
 import { wrap } from "../hooks/test-filter.mjs";
 
 test("wraps bare test runs only", () => {
-  for (const c of ["npm test", "pnpm test", "pnpm run test:unit", "heavy -- pnpm vitest run", "node --test tests/*.test.mjs",
+  for (const c of ["npm test", "npm run test:unit", "bun run test", "pnpm test", "pnpm run test:unit", "heavy -- pnpm vitest run", "node --test tests/*.test.mjs",
     "node services/host/test/host-flags.mjs", "cd services/node && node --test", "python3 -m pytest -q", "cargo test", "go test ./..."])
     assert.ok(wrap(c), c);
   for (const c of ["npm test | tail -5", "npm test > out.txt", "npm test; echo hi", "cd a && npm test && npm run build", "ls tests",

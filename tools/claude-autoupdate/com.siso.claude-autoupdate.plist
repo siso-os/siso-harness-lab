@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/Users/shaansisodia</string>
+	</dict>
+	<key>Label</key>
+	<string>com.siso.claude-autoupdate</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Users/shaansisodia/SISO_Workspace/SISO_Agents/siso-harness-lab/tools/claude-autoupdate/claude-autoupdate.sh</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/tmp/claude-autoupdate.err</string>
+	<key>StandardOutPath</key>
+	<string>/tmp/claude-autoupdate.out</string>
+	<key>StartInterval</key>
+	<integer>14400</integer>
+</dict>
+</plist>

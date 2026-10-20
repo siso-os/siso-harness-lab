@@ -22,14 +22,16 @@ const CORE = path.join(here, "WORKING-WITH-SHAAN.core.md");
 const ESTATE = path.join(here, "estate.md");
 
 const TARGETS = [
-  { tool: "claude", shell: path.join(here, "claude.shell.md"), out: path.join(HOME, ".claude/CLAUDE.md"), maxShellBytes: 900 }, // +200: compact instructions (Anthropic: CLAUDE.md steers compaction), 12 Oct
-  { tool: "codex", shell: path.join(here, "codex.shell.md"), out: path.join(HOME, ".codex/AGENTS.md"), maxShellBytes: 700 },
+  { tool: "claude", shell: path.join(here, "claude.shell.md"), out: path.join(HOME, ".claude/CLAUDE.md"), maxShellBytes: 1080 }, // +200: compact instructions (Anthropic: CLAUDE.md steers compaction), 12 Oct; +30: rr, 14 Oct; +150: wake-armed waits and task list, 17 Oct
+  { tool: "codex", shell: path.join(here, "codex.shell.md"), out: path.join(HOME, ".codex/AGENTS.md"), maxShellBytes: 900 }, // +200: no ask-the-user pop-ups, 19 Oct
   // omp (oh-my-pi) loads ~/.omp/agent/AGENTS.md as global context (marker-tested 2026-09-23); it reads
   // neither ~/.claude/CLAUDE.md nor ~/.codex/AGENTS.md. Its skills come from ~/.claude/skills.
   { tool: "omp", shell: path.join(here, "omp.shell.md"), out: path.join(HOME, ".omp/agent/AGENTS.md"), maxShellBytes: 400 },
 ];
 
-const MAX_CORE_BYTES = 2500; // 4 Oct (Elon pass): each composed file stays under 4 KB
+const MAX_CORE_BYTES = 3000; // 4 Oct (Elon pass): each composed file stays under 4 KB
+// 15 Oct: 2500 -> 3000 for the four lines that stop seats ending early, waiting on owners and offering instead of deciding
+// (EFFICIENCY, .agents/efficiency/STATE.md: 42 of 429 judged turn-endings failed, 37 of them "next I'm X" then stop).
 const MAX_ESTATE_BYTES = 900;
 
 // Where each harness loads skills from. Claude Code: ~/.claude/skills. Codex: ~/.agents/skills + ~/.codex/skills.

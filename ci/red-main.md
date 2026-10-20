@@ -1,0 +1,17 @@
+# Red-main recovery
+
+For a watched `main` with `"revert": true`, siso-ci records successful main SHAs. A failure invokes `red_main.py` beside the existing runner. Other branches retain their existing behavior. The currently opted-in repository is `sisodias/siso`; this does not enable recovery on any other repository.
+
+The bot selects the nearest recorded green first-parent ancestor (including older `state.json` receipts; at most 50 recent GitHub status lookups if no local receipt exists). It makes its own worktree under `_data/worktrees/<repo>/red-main-<owner>-<bad SHA>/checkout`. The shared checkout, its branch and any uncommitted edits are left alone.
+
+It reproduces both boundaries, runs `git bisect run` with `--first-parent`, and confirms the culprit fails while its first parent passes. This identifies a bad merge landing rather than an arbitrary feature-branch ancestor. Setup and infrastructure errors return Git's skip code 125; an ambiguous bisect does not revert anything. The setup/test commands and `SISO_CI_BASE` remain fixed for the diagnosis. Commands run with siso-ci's process-group timeouts under one `heavy` admission per operation (or the enclosing heavy job).
+
+The bot fetches current main again. If it now passes, it stops. Otherwise it makes a recovery branch, reverts the culprit (`-m 1` for merges), reruns the failing command, then calls `land` with `SISO_LAND_PR_ONLY=1`. A repo with an older kit that cannot honor PR-only mode is blocked, with its tested revert retained. The accompanying kit change adds this capability while preserving the fast check, secret scan and private-path guard. The global land fallback already opens a PR. No direct main push or force push exists in the new bot.
+
+The issue names the observed red SHA, last green, culprit, failing command, tested revert and PR. An open PR is reported as an open PR; main is only repaired after green siso-ci and merge. No test logs are posted by the bot. Existing siso-ci failure comments are unchanged.
+
+Receipts and an incident lock live beside the worktree. A deterministic culprit branch and existing-PR lookup prevent a second revert for the same culprit. Land/issue transport failures retry after five minutes; completed issue creation is idempotent. An interrupted diagnosis, dirty checkout, missing green, non-reproducing test, ambiguous bisect, conflict or failed revert check stops safely with evidence retained. Inspect those retained worktrees before resuming; they are never force-cleaned. Tests must be deterministic and runnable at both boundaries. No algorithm can prove monotonicity or eliminate flakiness from a single test run.
+
+Verification: `heavy -- node --test tests/red-main.test.mjs tests/siso-ci.test.mjs`. The real Git fixture seeds green → breaking → harmless-later commits, finds and reverts the middle commit, preserves the later file and dirty operator checkout, and confirms origin/main is unchanged. GitHub and land publication are faked only at the network boundary; separate kit tests exercise its actual PR-only script against a local bare origin. This is local functional proof, not evidence of a production recovery incident.
+
+Clone review: `_data/people-graph-research/2026-10-16-source-control/scion-on-github/clones-review.md`. Wren's first-parent bisect boundary informed the design. No clone code was executed or ported; stock Git supplies bisect and revert.

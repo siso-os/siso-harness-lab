@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# show-page: put a page in front of Shaan at a real link, never the SISO console.
+#   show-page <page.html | dir with index.html> <slug>   ->  https://<slug>.siso-show.pages.dev
+# Shaan, 16 Oct: "It should be like just sending me the link straight up. I shouldn't have to go on this SISO console".
+# It refuses a page that carries an IP address, an email address or something shaped like a key (look at what it
+# found; if none of it is private, rerun with SHOW_PAGE_OK=1). It prints the link only once the page answers 200.
+set -euo pipefail
+src="${1:-}"; slug="${2:-}"
+[[ -n "$src" && -n "$slug" ]] || { echo "usage: show-page <page.html|dir> <slug>" >&2; exit 64; }
+[[ "$slug" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || { echo "show-page: the slug is lowercase letters, digits and dashes" >&2; exit 64; }
+stage="$(mktemp -d "${TMPDIR:-/tmp}/show-page.XXXXXX")"
+if [[ -d "$src" ]]; then cp -R "$src"/. "$stage"/; else cp "$src" "$stage/index.html"; fi
+[[ -f "$stage/index.html" ]] || { echo "show-page: no index.html in $src" >&2; exit 65; }
+# Keep the guard callable on fixtures without staging or publishing a page.
+show_page_guard() {
+  {
+    # Retain the surrounding text so SVG decimal runs cannot masquerade as IPv4.
+    grep -rIHE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' "$1" | awk '
+      {
+        colon = index($0, ":")
+        file = substr($0, 1, colon)
+        rest = substr($0, colon + 1)
+        while (match(rest, /[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/)) {
+          ip = substr(rest, RSTART, RLENGTH)
+          before = substr(rest, 1, RSTART - 1)
+          after = substr(rest, RSTART + RLENGTH)
+          valid = before !~ /[[:alnum:]_.]$/ && after !~ /^[[:alnum:]_.]/
+          split(ip, octet, ".")
+          for (i = 1; i <= 4; i++) if (octet[i] + 0 > 255) valid = 0
+          if (valid) print file ip
+          rest = after
+        }
+      }'
+    grep -rIoE '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z.]{2,}|sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[abpr]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}' "$1"
+  } | grep -vE ':(127\.0\.0\.1|0\.0\.0\.0)$' | sort -u | head -20 || true
+}
+if [[ "${SHOW_PAGE_OK:-}" != 1 ]]; then
+  found="$(show_page_guard "$stage")"
+  [[ -z "$found" ]] || { echo "show-page: refused, the page carries:" >&2; echo "$found" >&2; exit 66; }
+fi
+url="https://$slug.siso-show.pages.dev"
+wrangler pages deploy "$stage" --project-name siso-show --branch "$slug" --commit-dirty=true >/dev/null 2>"$stage.log" \
+  || { cat "$stage.log" >&2; exit 1; }
+for _ in $(seq 1 30); do
+  [[ "$(curl -s -o /dev/null -w '%{http_code}' -m 10 "$url/")" == 200 ]] && { echo "$url"; exit 0; }
+  sleep 4
+done
+echo "show-page: deployed, but $url did not answer 200 within 2 minutes" >&2; exit 1

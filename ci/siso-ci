@@ -1,0 +1,688 @@
+#!/usr/bin/env python3
+"""siso-ci: our own CI. Runs each open PR's tests on the Mac mini and posts a `siso-ci` commit status.
+
+Shaan, 15 Oct 20:30: "The github billing is going to fail. We need a better way of doing the CI. Maybe just running it
+ourself ... I don't want to do payments." GitHub Actions has started no hosted job on sisodias repos since 13 Oct
+(billing). siso-ci needs no Actions: it polls open PRs with `gh`, runs the repo's tests in its own checkout and posts the
+result through the statuses API (`repos/O/R/statuses/SHA`, context `siso-ci`).
+
+  siso-ci serve [--every 60]          loop for launchd on the Mini (ci/com.siso.ci.plist)
+  siso-ci once                        one pass over every repo in ci/repos.json
+  siso-ci pr <repo> <number>          run one PR now (also re-runs a SHA that already has a status)
+  siso-ci prune [--dry-run] [--days N] free disk when under the floor (also runs before each pass)
+  siso-ci selftest                    the failure-parser checks (tests/siso-ci.test.mjs runs this)
+
+Per repo (ci/repos.json, or a `.siso-ci` file in the repo, which wins): `setup` then `test`, run with SISO_CI_BASE (the
+PR base SHA) in the environment; a repo with "branch_file": true runs only the branch's `.siso-ci`, and a branch without
+one is skipped (no status, no comment). "branches": a list of branches whose every new commit is tested after it
+merges (oldest first, before any PR), its status saying whether DEV and the box may take it; a failure comments on the commit. With "revert": true, red main is bisected from its last green first-parent ancestor; a tested culprit revert goes through land as a PR, with a GitHub issue. Other branches retain the existing auto-revert path. See ci/red-main.md. Each step runs in its own process group, and a timeout kills the whole group.
+mode "new-failures" (a repo whose main is already red): a failing head is green when every failing test also fails on
+the base. A failure posts the log tail as a PR comment and links it from the status.
+Work goes in ~/SISO_Workspace/_data/siso-ci/<repo> (one checkout per repo, reused); results in state.json there.
+"""
+import argparse, calendar, json, os, re, signal, subprocess, sys, tempfile, time
+# Keep the serving CI tree free of newly generated executable import caches.
+sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+import affected
+import retention
+import worker_pool
+import runtime_handoff
+from pathlib import Path
+import red_main
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+HOST_CONFIG = json.loads(Path(HERE, 'workers.json').read_text())
+HOST_CONFIG = HOST_CONFIG.get(__import__('socket').gethostname(), HOST_CONFIG['default'])
+WORK = os.path.expanduser(os.environ.get('SISO_CI_WORK', HOST_CONFIG.get('work_root', '~/SISO_Workspace/_data/siso-ci')))
+if HOST_CONFIG.get('archive_root'):
+    os.environ.setdefault('SISO_CI_ARCHIVE', HOST_CONFIG['archive_root'])
+if HOST_CONFIG.get('red_main_root'):
+    os.environ.setdefault('SISO_RED_MAIN_WORK', HOST_CONFIG['red_main_root'])
+CONTEXT = 'siso-ci'
+TIMEOUT = 45 * 60
+FRESH_DAYS = 7  # PRs updated longer ago than this are left alone (no backlog of stale PRs)
+BRANCH_RUNS = 10  # at most this many new commits on a watched branch are tested per pass, oldest first
+
+
+def log(*a):
+    print(time.strftime('%H:%M:%S'), *a, flush=True)
+
+
+def sh(cmd, cwd=None, timeout=None, env=None, check=True):
+    p = subprocess.run(cmd, cwd=cwd, shell=isinstance(cmd, str), capture_output=True, text=True, timeout=timeout,
+                       env={**os.environ, **(env or {})})
+    if check and p.returncode:
+        raise RuntimeError(f'{cmd if isinstance(cmd, str) else " ".join(cmd)} -> {p.returncode}: {p.stderr[-400:]}')
+    return p
+
+
+def gh_json(*args):
+    return json.loads(sh(['gh', *args]).stdout or 'null')
+
+
+# ---- what failed: names of failing tests from common runners, so a head can be compared with its base ----
+FAIL_PATTERNS = [
+    re.compile(r'^\s*not ok \d+ - (.+?)\s*(?:#.*)?$'),           # node --test (TAP)
+    re.compile(r'^(?:FAIL|ERROR): (\S+ \(.+?\))'),                 # python unittest
+    re.compile(r'^FAILED (\S+?)(?: - .*)?$'),                      # pytest -rf
+    re.compile(r'^\s*(?:×|✗|✕) (.+?)(?: \d+m?s)?$'),              # vitest / bun
+    re.compile(r'^ FAIL +(.+?)(?: \[.*\])?$'),                     # vitest file header
+    re.compile(r'^\s*(?:✖|✘) (.+?)(?: \(\d+.*\))?$'),             # node --test spec reporter
+    re.compile(r'^(?:FAIL|✗) ?(?:\[\w+\] )?(.+?): (?:failed|exit \d+)'),  # check scripts: "FAIL name: failed"
+]
+ANSI = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+
+
+def failing(output):
+    out = set()
+    for line in ANSI.sub('', output).splitlines():
+        for pat in FAIL_PATTERNS:
+            m = pat.match(line)
+            if m:
+                name = re.sub(r'\s+', ' ', m.group(1)).strip()
+                if not name.endswith(':'):  # "✖ failing tests:" is a summary header, not a test
+                    out.add(name)
+                break
+    return out
+
+
+# ---- the repo's own commands ----
+def config():
+    return json.load(open(os.path.join(HERE, 'repos.json')))
+
+
+def repo_dir(repo):
+    return os.path.join(WORK, 'clones', *repo.split('/'))
+
+
+def checkout(repo, sha, ref=None):
+    d = repo_dir(repo)
+    if not os.path.isdir(os.path.join(d, '.git')):
+        os.makedirs(os.path.dirname(d), exist_ok=True)
+        sh(['gh', 'repo', 'clone', repo, d, '--', '--filter=blob:none', '-q'])
+    if sh(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=d).stdout.strip():
+        raise RuntimeError('owned CI clone has tracked changes; retained for inspection')
+    untracked = sh(['git', 'ls-files', '--others', '--exclude-standard', '-z'], cwd=d).stdout
+    for name in sorted(untracked.rstrip('\0').split('\0')) if untracked else []:
+        worker_pool.archive(Path(d) / name, Path(WORK) / '_archive')
+    sh(['git', 'fetch', '-q', 'origin', ref or sha], cwd=d)
+    sh(['git', 'checkout', '-q', '--detach', sha], cwd=d)
+    return d
+
+
+def commands(repo, d, cfg):
+    own = os.path.join(d, '.siso-ci')
+    if os.path.isfile(own):
+        return {**cfg, 'setup': '', 'test': 'sh .siso-ci', 'mode': cfg.get('mode', 'all')}
+    return None if cfg.get('branch_file') else cfg  # branch_file: only the branch's .siso-ci runs; none, nothing to run
+
+
+def run_tests(repo, d, cfg, base):
+    env = {'npm_config_cache': os.path.join(WORK, 'cache', 'npm'), 'SISO_CI_NM_CACHE': os.path.join(WORK, 'cache', 'node_modules'), 'SISO_CI_BASE': base, 'SISO_CI_MODE': cfg.get('ci_mode', 'full'), 'CI': '1', 'FORCE_COLOR': '0', 'PYTHONDONTWRITEBYTECODE': '1'}
+    if HOST_CONFIG.get('temp_root'):
+        Path(HOST_CONFIG['temp_root']).mkdir(parents=True, exist_ok=True)
+        env['TMPDIR'] = HOST_CONFIG['temp_root']
+    t0 = time.time()
+    admission_seconds = 0
+    selection = cfg.get('selection', {'mode': 'full', 'reason': 'full suite required'})
+    parts = ['[siso-ci] ' + affected.describe(selection)]
+    log(parts[0])
+    for step in ('setup', 'test'):
+        cmd = cfg.get(step)
+        if not cmd:
+            continue
+        heavy = '' if os.environ.get('SISO_HEAVY_LEASE') else sh_quote(os.path.join(HERE, '../bin/heavy')) + ' -- '
+        shard = cfg.get('sharding', {}) if step == 'test' else {}
+        count = shard.get('count', 1)
+        if count > 1 and len(__import__('glob').glob(os.path.join(d, shard.get('test_glob', '**/*.test.*')), recursive=True)) >= shard.get('min_files', 100):
+            from concurrent.futures import ThreadPoolExecutor
+            def run_shard(i):
+                return run_step(heavy + 'nice -n 10 sh -c ' + sh_quote(cmd + f' --shard={i}/{count}'),
+                                d, {**env, 'SISO_CI_SHARD': f'{i}/{count}'}, cfg.get('timeout', TIMEOUT))
+            with ThreadPoolExecutor(max_workers=count) as pool:
+                outcomes = list(pool.map(run_shard, range(1, count + 1)))
+            code = next((c for c, _ in outcomes if c), 0)
+            out = '\n'.join(f'[shard {i}/{count}]\n{o}' for i, (_, o) in enumerate(outcomes, 1))
+        else:
+            code, out = run_step(heavy + f'nice -n 10 sh -c {sh_quote(cmd)}', d, env, cfg.get('timeout', TIMEOUT))
+        waits = [float(v) for v in re.findall(r'heavy: ticket \d+ admitted slot \d+ after ([0-9.]+)s', out)]
+        admission_seconds += (max(waits) if shard.get('count', 1) > 1 else sum(waits)) if waits else 0
+        parts.append(f'$ {cmd}\n{out}')
+        parts.append('[siso-ci-admission-seconds] ' + str(admission_seconds))
+        if code and worker_pool.infrastructure_category(out):
+            code = 125
+        if code:
+            parts.append(failure_summary(d, step, code, out))
+        if code == 124:
+            return 124, '\n'.join(parts) + f'\n[siso-ci] {step} timed out after {TIMEOUT // 60} min', time.time() - t0
+        if code:
+            return code, '\n'.join(parts), time.time() - t0
+    return 0, '\n'.join(parts), time.time() - t0
+
+
+def failure_summary(d, step, code, output):
+    """Bounded public facts only; test names and raw diagnostics stay private."""
+    modules = []
+    for name in re.findall(r'^check: FAILED ([a-zA-Z0-9_./-]{1,160})$', ANSI.sub('', output), re.M):
+        if '..' not in name.split('/') and not name.startswith('/') and (Path(d) / name / 'check.sh').is_file():
+            if name not in modules and len(modules) < 12:
+                modules.append(name)
+    return '[siso-ci-failure] ' + json.dumps({
+        'step': step, 'exit': code,
+        'category': worker_pool.infrastructure_category(output) or ('timeout' if code == 124 else 'check-failed'),
+        'modules': modules,
+    }, sort_keys=True)
+
+
+def run_step(cmd, d, env, timeout=None):
+    """One step in its own process group, its output in a file, so a timeout kills everything it started (a stuck
+    test runner too) and the log still shows where it stopped."""
+    with tempfile.TemporaryFile(mode='w+') as f:
+        p = subprocess.Popen(cmd, cwd=d, shell=True, stdout=f, stderr=subprocess.STDOUT, text=True,
+                             env={**os.environ, **env}, start_new_session=True)
+        try:
+            code = p.wait(timeout=timeout or TIMEOUT)
+        except subprocess.TimeoutExpired:
+            code = 124
+        if code == 124 or code < 0:
+            for sig, grace in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
+                try:
+                    os.killpg(p.pid, sig)
+                except ProcessLookupError:
+                    break
+                try:
+                    p.wait(timeout=grace)
+                except subprocess.TimeoutExpired:
+                    pass
+        else:  # a finished step can leave children behind (a server it started); they go with it
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        f.seek(0)
+        return code, f.read()
+
+
+def sh_quote(s):
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+# ---- GitHub side ----
+RUNNER_BUSY = 'runner busy'
+
+
+def post_status(repo, sha, state, desc, url=None, context=None):
+    args = ['gh', 'api', '-X', 'POST', f'repos/{repo}/statuses/{sha}', '-f', f'state={state}', '-f', f'context={context or CONTEXT}',
+            '-f', f'description={desc[:139]}']
+    if url:
+        args += ['-f', f'target_url={url}']
+    sh(args)
+
+
+def has_status(repo, sha, context=None):
+    st = gh_json('api', f'repos/{repo}/commits/{sha}/statuses', '--paginate')
+    latest = next((s for s in st or [] if s['context'] == (context or CONTEXT)), None)
+    if latest is not None and latest['state'] == 'pending' and latest.get('description', '').startswith(RUNNER_BUSY):
+        return True  # the runner's own cap, not a verdict: settled for this SHA, a new push (or a manual `pr` run) retries
+    return latest is not None and latest['state'] in ('success', 'failure')
+
+
+def comment(repo, number, body):
+    r = gh_json('api', '-X', 'POST', f'repos/{repo}/issues/{number}/comments', '-f', f'body={body}')
+    return r.get('html_url')
+
+
+# ---- one PR ----
+def state_load():
+    try:
+        return json.load(open(os.path.join(WORK, 'state.json')))
+    except (OSError, ValueError):
+        return {}
+
+
+def state_save(st):
+    os.makedirs(WORK, exist_ok=True)
+    tmp = os.path.join(WORK, 'state.json.tmp')
+    json.dump(st, open(tmp, 'w'), indent=1)
+    os.replace(tmp, os.path.join(WORK, 'state.json'))
+
+
+def run_pr(repo, cfg, pr, st):
+    sha, base, n = pr['headRefOid'], pr['baseRefOid'], pr['number']
+    d = checkout(repo, sha, f'pull/{n}/head')
+    cmds = commands(repo, d, cfg)
+    if cmds is None:
+        st.setdefault('done', {})[f'{repo}@{sha}'] = {'state': 'skipped', 'desc': 'no .siso-ci on the branch'}
+        state_save(st)
+        log(f'{repo}#{n} {sha[:10]} skipped: no .siso-ci on the branch')
+        return 'skipped'
+    sh(['git', 'fetch', '-q', 'origin', base], cwd=d)
+    base = sh(['git', 'merge-base', base, sha], cwd=d).stdout.strip()
+    cmds = affected.select(d, cmds, base, sha)
+    cmds['ci_mode'] = cfg.get('pr_mode', 'full')
+    if cfg.get('pr_script'):  # a runner-owned PR gate replaces the repo's .siso-ci for PR heads (the branch/train keep the full one)
+        cmds = {**cmds, 'test': 'sh ' + sh_quote(os.path.join(HERE, cfg['pr_script']))}
+    if cfg.get('pr_timeout'):
+        cmds['timeout'] = cfg['pr_timeout']
+    selection = cmds['selection']
+    log(f'{repo}#{n} {sha[:10]} start: {affected.describe(selection)}')
+    post_status(repo, sha, 'pending', f'PR affected/full checks: {cmds.get("test")[:90]}', context='siso-ci/pr')
+    if cfg.get('pr_status', 'siso-ci/pr') != 'siso-ci/pr':
+        post_status(repo, sha, 'pending', 'PR checks running', context=cfg['pr_status'])
+    if selection['mode'] == 'skip':  # nothing to prove: no heavy ticket, no install, no runner
+        code, out, secs = 0, '[siso-ci] ' + affected.describe(selection), 0.0
+    else:
+        code, out, secs = run_tests(repo, d, cmds, base)
+    verdict, desc = ('success', f'passed in {secs / 60:.1f} min') if code == 0 else ('error' if code >= 124 else 'failure', f'exit {code} after {secs / 60:.1f} min')
+    head_fail = failing(out)
+    if code and code < 124 and cmds.get('mode') == 'new-failures':
+        bkey = f'{repo}@{base}'
+        if bkey not in st.get('base', {}):
+            checkout(repo, base)
+            bcode, bout, _ = run_tests(repo, d, commands(repo, d, cfg) or {}, base)
+            st.setdefault('base', {})[bkey] = sorted(failing(bout)) if bcode else []
+        base_fail = set(st['base'][bkey])
+        checkout(repo, sha, f'pull/{n}/head')  # base comparison must never leave retries on base
+        if head_fail - base_fail:  # a flaky test must fail twice on the head to count
+            _, again, _ = run_tests(repo, d, {**cmds, 'setup': ''}, base)
+            head_fail = (head_fail - base_fail) & failing(again) | (head_fail & base_fail)
+        new = sorted(head_fail - base_fail)
+        if head_fail and not new:
+            verdict, desc = 'success', f'no new failures ({len(head_fail)} also fail on base) in {secs / 60:.1f} min'
+        elif new:
+            desc = f'{len(new)} new failure(s); see runner receipt'
+    elif code and head_fail:
+        desc = f'{len(head_fail)} failing; exit {code}; see runner receipt'
+    url = None
+    if verdict == 'failure':
+        private_log = Path(WORK) / ('pr-' + sha + '.log')
+        private_log.parent.mkdir(parents=True, exist_ok=True)
+        private_log.write_text(out)
+        private_log.chmod(0o600)
+        url = comment(repo, n, f'**siso-ci/pr failed** at `{sha}` (exit {code}). Private runner log: `{private_log.name}`; no raw test output published.')
+    if code in (124, 143):  # the job cap: say which test files were still running
+        hung = sorted(set(re.findall(r'\[siso-ci\] HUNG \S*node\S* (?:--\S+ )*(\S+\.test\.\w+)', out)))
+        desc = 'job cap hit' + (f'; hung: {", ".join(hung)}' if hung else '; see the runner log')
+    if code in (124, 143):  # a runner limit is not a red test: pending, never failure/error, and not re-queued (has_status)
+        verdict, url = 'pending', None
+    desc = (f"{selection['mode']} {selection['selected']}/{selection['total']} files; {desc}" if selection.get('total')
+            else f"{selection['mode']}-only; {desc}" if selection['mode'] in ('changed', 'skip') else f"full suite; {desc}")
+    if verdict == 'pending' and code in (124, 143):
+        desc = f'{RUNNER_BUSY}: {desc}'  # first, so has_status can recognise it
+    post_status(repo, sha, verdict, desc, url, context='siso-ci/pr')
+    alias = cfg.get('pr_status', 'siso-ci/pr')
+    if alias != 'siso-ci/pr':
+        post_status(repo, sha, verdict, desc, url, context=alias)
+        st.setdefault('done', {})[f'{repo}@{sha}:{alias}'] = {'state': verdict, 'desc': desc}
+    st.setdefault('done', {})[f'{repo}@{sha}:siso-ci/pr'] = {'state': verdict, 'desc': desc, 'selection': selection, 'seconds': secs, 'at': time.strftime('%Y-%m-%dT%H:%M:%S%z')}
+    state_save(st)
+    log(f'{repo}#{n} {sha[:10]} {verdict}: {desc}')
+    return verdict
+
+
+def run_commit(repo, cfg, branch, sha, st):
+    """One commit on a watched branch, after it merged. Its status says whether DEV and the box may take it; a failure
+    comments on the commit so it is reverted and its item reopened."""
+    d = checkout(repo, sha, branch)
+    cmds = commands(repo, d, cfg)
+    st.setdefault('branches', {})[f'{repo}@{branch}'] = sha
+    if cmds is None:
+        st.setdefault('done', {})[f'{repo}@{sha}'] = {'state': 'skipped', 'desc': 'no .siso-ci on the commit'}
+        state_save(st)
+        return 'skipped'
+    parent = sh(['git', 'rev-parse', f'{sha}^'], cwd=d, check=False).stdout.strip() or sha
+    log(f'{repo}@{branch} {sha[:10]} start (after merge)')
+    post_status(repo, sha, 'pending', f'after merge, on the Mac mini: {cmds.get("test")[:80]}')
+    code, out, secs = run_tests(repo, d, cmds, parent)
+    head_fail = failing(out)
+    if code == 0:
+        verdict, desc = 'success', f'passed in {secs / 60:.1f} min'
+    else:
+        verdict = 'failure'
+        desc = f'{len(head_fail)} failing; exit {code}; see runner receipt' if head_fail else f'exit {code} after {secs / 60:.1f} min'
+    url = None
+    if verdict == 'failure':
+        tail = failure_summary(d, 'checks', code, out)
+        r = gh_json('api', '-X', 'POST', f'repos/{repo}/commits/{sha}/comments', '-f',
+                    f'body=**siso-ci failed after merge** on `{branch}` at `{sha[:10]}` ({desc}). Revert this commit and reopen '
+                    f'its item; DEV and the box do not take it. Failure receipt (raw output withheld):\n\n<details><summary>log</summary>\n\n```\n{tail[-60000:]}\n```\n</details>')
+        url = (r or {}).get('html_url')
+    post_status(repo, sha, verdict, desc, url)
+    if verdict == 'success':
+        st.setdefault('green', {})[f'{repo}@{branch}'] = sha
+    if verdict == 'failure' and cfg.get('revert') and branch == 'main':
+        recover_main(repo, d, cmds, sha, None, st)
+    elif verdict == 'failure' and cfg.get('revert'):
+        try:
+            auto_revert(repo, d, cfg, cmds, branch, sha, desc, url)
+        except Exception as e:  # a failed revert must never stop the watcher; the commit comment already names the failure
+            log(f'{repo}@{branch} {sha[:10]} auto-revert error: {e}')
+    st.setdefault('done', {})[f'{repo}@{sha}'] = {'state': verdict, 'desc': desc, 'branch': branch, 'at': time.strftime('%Y-%m-%dT%H:%M:%S%z')}
+    state_save(st)
+    log(f'{repo}@{branch} {sha[:10]} {verdict}: {desc}')
+    return verdict
+
+
+def last_green(d, repo, bad, st):
+    """Use only observed green statuses on main's first-parent chain, never guess bad^.
+
+    Older state.json files already contain successful branch runs. If no local
+    receipt exists, check up to 50 recent first-parent commits' GitHub statuses.
+    """
+    history = sh(['git', 'rev-list', '--first-parent', bad + '^'], cwd=d, check=False).stdout.splitlines()
+    known = st.get('green', {}).get(f'{repo}@main')
+    for sha in history:
+        entry = st.get('done', {}).get(f'{repo}@{sha}', {})
+        if sha == known or (entry.get('state') == 'success' and entry.get('branch') == 'main'):
+            return sha
+    for sha in history[:50]:
+        statuses = gh_json('api', f'repos/{repo}/commits/{sha}/statuses') or []
+        latest = next((s for s in statuses if s['context'] == CONTEXT), None)
+        if latest and latest['state'] == 'success' and not latest.get('description', '').startswith('subset '):
+            return sha
+    return None
+
+
+def recover_main(repo, d, cmds, bad, good, st):
+    key = f'{repo}@{bad}'
+    task = {'repo': repo, 'bad': bad, 'good': good, 'commands': cmds, 'state': 'running'}
+    st.setdefault('red_main', {})[key] = task
+    state_save(st)
+    try:
+        if good is None:
+            good = last_green(d, repo, bad, st)
+            task['good'] = good
+            state_save(st)
+        result = red_main.recover(sys.modules[__name__], repo, d, cmds, bad, good)
+        task.update(state='pr', **{k: result[k] for k in ('culprit', 'revert', 'pr', 'issue')})
+        log(f'{repo} recovery PR: {result["pr"]}')
+    except red_main.RecoveryBlocked as e:
+        task.update(state='retry' if e.retry else 'blocked', reason=str(e), after=time.time() + 300)
+        log(f'{repo} red-main {task["state"]}: {e}')
+    except Exception:
+        # API failures may contain credentials in stderr. Preserve the owned
+        # receipt and retry without echoing external subprocess output.
+        task.update(state='retry', reason='recovery command failed', after=time.time() + 300)
+        log(f'{repo} red-main: command failed; receipt retained')
+    state_save(st)
+
+
+def auto_revert(repo, d, cfg, cmds, branch, bad, desc, url):
+    """Opt-in ("revert": true): revert the red commit on the branch, re-run the check on the result, push it only if
+    green, then open an issue mentioning the CODEOWNERS owners of the changed paths (the kit's bin/owners-of).
+    Same message format as the kit's Actions auto-revert, so whichever path runs first, the other sees it and stops."""
+    git = lambda *a, **k: sh(['git', *a], cwd=d, check=False, **k)
+    sh(['git', 'fetch', '-q', 'origin', branch], cwd=d)
+    head = git('rev-parse', 'FETCH_HEAD').stdout.strip()
+    if git('merge-base', '--is-ancestor', bad, head).returncode != 0:
+        return log(f'{repo} {bad[:10]} no longer on {branch}; not reverting')
+    if git('log', f'--grep=auto-revert: .* {bad}', '--format=%H', f'{bad}..{head}').stdout.strip():
+        return log(f'{repo} {bad[:10]} already reverted')
+    git('checkout', '-q', '--detach', '-f', head)
+    files = git('diff-tree', '--no-commit-id', '--name-only', '-r', '-m', '--first-parent', bad).stdout.split()
+    owners = ''
+    if os.path.isfile(os.path.join(d, 'bin/owners-of')):
+        owners = sh(['python3', 'bin/owners-of', *files], cwd=d, check=False).stdout.strip()
+    subj = git('log', '-1', '--format=%s', bad).stdout.strip()
+    merge = len(git('rev-list', '--parents', '-n1', bad).stdout.split()) > 2
+    r = git('-c', 'user.name=siso-ci', '-c', 'user.email=siso-ci@users.noreply.github.com', 'revert', '--no-edit', *(['-m', '1'] if merge else []), bad)
+    if r.returncode:
+        git('revert', '--abort')
+        result = 'Revert conflicts with later commits: NOT reverted, needs a human.'
+    else:
+        git('-c', 'user.name=siso-ci', '-c', 'user.email=siso-ci@users.noreply.github.com', 'commit', '--amend', '-q',
+            '-m', f'auto-revert: {subj}', '-m', f'auto-revert: siso-ci failed for {bad} ({desc})')
+        code, out, _ = run_tests(repo, d, cmds, bad)
+        new = git('rev-parse', 'HEAD').stdout.strip()
+        if code:
+            result = 'Revert NOT pushed: main stays red after reverting, needs a human.'
+        else:
+            p = git('push', 'origin', f'HEAD:{branch}')
+            if p.returncode:
+                result = f'Revert built but the push failed (main moved?): {p.stderr.strip()[-200:]}'
+            else:
+                result = f'Reverted on {branch} as {new[:10]}.'
+                post_status(repo, new, 'success', f'auto-revert of {bad[:7]}, check passed')
+    body = f'{owners}: commit {bad} failed siso-ci after merge ({desc}). {result} Files: {" ".join(files)[:500]}'
+    i = sh(['gh', 'issue', 'create', '-R', repo, '--title', f'auto-revert: {subj} ({bad[:7]})', '--body', body], check=False)
+    if i.returncode:
+        gh_json('api', '-X', 'POST', f'repos/{repo}/commits/{bad}/comments', '-f', f'body={body}')
+    log(f'{repo}@{branch} {bad[:10]} auto-revert: {result}')
+
+
+def branch_runs(repo, cfg, st):
+    """Test every new commit on each watched branch ("branches" in ci/repos.json), oldest first: merges land on a
+    fast local check, and this is the full check after."""
+    for branch in cfg.get('branches', []):
+        head = (gh_json('api', f'repos/{repo}/commits/{branch}') or {}).get('sha')
+        last = st.get('branches', {}).get(f'{repo}@{branch}')
+        if not head or head == last:
+            continue
+        shas = [head]
+        if last:
+            d = checkout(repo, head, branch)
+            r = sh(['git', 'rev-list', '--reverse', '--first-parent', f'{last}..{head}'], cwd=d, check=False)
+            shas = (r.stdout.split() if r.returncode == 0 else [])[-BRANCH_RUNS:] or [head]
+        for sha in shas:
+            # A PR status (including a subset success) is not a post-merge full run.
+            done = st.get('done', {}).get(f'{repo}@{sha}', {})
+            if done.get('branch') == branch:
+                st.setdefault('branches', {})[f'{repo}@{branch}'] = sha
+                state_save(st)
+                continue
+            run_commit(repo, cfg, branch, sha, st)
+
+
+def discover_jobs():
+    jobs = []
+    for repo, cfg in config().items():
+        try:
+            prs = gh_json('pr', 'list', '--repo', repo, '--state', 'open', '--limit', '500',
+                          '--json', 'number,headRefOid,baseRefOid,updatedAt,headRepositoryOwner,isDraft')
+            for pr in prs or []:
+                if not has_status(repo, pr['headRefOid'], 'siso-ci/pr'):
+                    jobs.append({'kind': 'pr', 'repo': repo, 'cfg': cfg, 'pr': pr})
+            for branch in cfg.get('branches', []):
+                if branch in cfg.get('train', {}).get('branches', []):
+                    continue  # the train tests one head; never replay every merge
+                head = gh_json('api', f'repos/{repo}/commits/{branch}')['sha']
+                if not has_status(repo, head):
+                    jobs.append({'kind': 'commit', 'repo': repo, 'cfg': cfg, 'branch': branch, 'sha': head})
+        except Exception as e:
+            log(repo, 'discovery failed:', type(e).__name__)
+    return sorted(jobs, key=lambda j: (j['kind'] != 'pr', j['cfg'].get('priority', 100), j.get('pr', {}).get('isDraft', False)))
+
+
+class Trains:
+    """Every `train.branches` entry in ci/repos.json runs its ship train (ci/ship-train) as a child of this
+    coordinator, so a merged green head tests, ships and shows in this log without a second scheduler. The train takes
+    its own per-branch lock, so a stray second copy (the old launchd job) only finds it locked. At most one child per
+    branch; the next starts `train.every` seconds (default 120) after the last one ended."""
+
+    def __init__(self, script=None):
+        self.script = script or os.path.join(HERE, 'ship-train')
+        self.running = {}  # (repo, branch) -> (Popen, output file)
+        self.next_at = {}
+
+    @property
+    def active(self):
+        return bool(self.running)
+
+    def tick(self, now=None):
+        now = time.time() if now is None else now
+        receipts = []
+        for key, (proc, out) in list(self.running.items()):
+            if proc.poll() is None:
+                continue
+            out.seek(0)
+            lines = [l for l in out.read().splitlines() if l.strip()]
+            out.close()
+            del self.running[key]
+            nightly = key[2] == 'nightly'
+            self.next_at[key] = now + (1800 if nightly else config()[key[0]].get('train', {}).get('every', 120))
+            kind = 'nightly' if nightly else 'train'
+            try:
+                record = json.loads(lines[-1])
+                if record.get('state') not in ('locked', 'held', 'not-due'):  # an older train owns the branch, HOLD is set, or the nightly is not due: nothing to report
+                    receipts.append({'kind': kind, **record})
+            except (IndexError, ValueError):
+                receipts.append({'kind': kind, 'repo': key[0], 'branch': key[1], 'state': 'crashed',
+                                 'exit': proc.returncode, 'tail': '\n'.join(lines[-5:])[-400:]})
+        for repo, cfg in config().items():
+            for branch in cfg.get('train', {}).get('branches', []):
+                for mode in ('train', 'nightly'):
+                    key = (repo, branch, mode)
+                    if (mode == 'nightly' and cfg['train'].get('suite') != 'nightly') or key in self.running or now < self.next_at.get(key, 0):
+                        continue
+                    out = tempfile.TemporaryFile(mode='w+')
+                    argv = [sys.executable, self.script, repo, branch] + (['--nightly'] if mode == 'nightly' else [])
+                    self.running[key] = (subprocess.Popen(argv, stdout=out, stderr=subprocess.STDOUT, text=True), out)
+        return receipts
+
+
+def prune(dry_run=False, days=None):
+    """Free disk when under the floor: regenerable clones unused for N days go, oldest first (ci/retention.py)."""
+    cfg = HOST_CONFIG.get('retention', {})
+    try:
+        return retention.prune(WORK, cfg.get('floor_gib', 25), cfg.get('margin_gib', 5),
+                               cfg.get('days', 2) if days is None else days, dry_run=dry_run, log=log)
+    except Exception as e:
+        log('retention failed:', type(e).__name__, e)
+        return []
+
+
+def once():
+    prune()
+    for receipt in worker_pool.dispatch(discover_jobs(), worker_pool.slots(os.path.join(HERE, 'workers.json')),
+                                        __file__, WORK):
+        log(json.dumps(receipt))
+
+
+def worker():
+    global CONTEXT
+    job = json.load(sys.stdin)
+    token = job.pop('_github_token', None)
+    if token:
+        os.environ.update(GH_TOKEN=token, GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='credential.helper',
+                          GIT_CONFIG_VALUE_0='!gh auth git-credential')
+    with worker_pool.lock(Path(WORK) / 'worker.lock'):
+        worker_pool.disk_guard(WORK, job.get('minimum_free_mb', 2048))
+        st = state_load()
+        if job['kind'] == 'pr':
+            CONTEXT = 'siso-ci/pr'
+            result = run_pr(job['repo'], job['cfg'], job['pr'], st)
+        else:
+            result = run_commit(job['repo'], job['cfg'], job['branch'], job['sha'], st)
+        print(json.dumps({'state': result, 'queue_wait_seconds': job.get('queue_wait_seconds', 0)}))
+        return 0 if result == 'success' else 1
+
+
+def self_update(lock_fd=None):
+    """The Mini runs siso-ci from its siso-harness-lab main checkout: pull merged changes and restart on them."""
+    repo = os.path.dirname(HERE)
+    try:
+        if sh(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd=repo).stdout.strip() != 'main':
+            return
+        if sh(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=repo).stdout.strip():
+            return
+        before = sh(['git', 'rev-parse', 'HEAD'], cwd=repo).stdout.strip()
+        sh(['git', 'pull', '-q', '--ff-only', 'origin', 'main'], cwd=repo, timeout=120)
+        if sh(['git', 'rev-parse', 'HEAD'], cwd=repo).stdout.strip() != before:
+            log('siso-ci updated; restarting')
+            if lock_fd is not None:
+                runtime_handoff.exec_locked(lock_fd, os.path.realpath(__file__), sys.argv[1:])
+            else:
+                os.execv(sys.executable, [sys.executable, os.path.realpath(__file__), *sys.argv[1:]])
+    except Exception as e:
+        log(f'self-update skipped: {e}')
+
+
+def selftest():
+    out = '\n'.join([
+        'not ok 3 - fleet-check prints json', '    not ok 1 - nested case # time=1ms',
+        'FAIL: test_x (tests.test_audit.T.test_x)', 'FAILED tests/test_a.py::test_b - assert 1 == 2',
+        ' × src/a.test.ts > adds 12ms', ' FAIL  apps/server/src/x.test.ts [ apps/server/src/x.test.ts ]',
+        '✖ headless page (12.3ms)', '✖ failing tests:', 'ok 4 - passes', '✓ passes too'])
+    got = failing(out)
+    want = {'fleet-check prints json', 'nested case', 'test_x (tests.test_audit.T.test_x)', 'tests/test_a.py::test_b',
+            'src/a.test.ts > adds', 'apps/server/src/x.test.ts', 'headless page'}
+    assert got == want, (got ^ want)
+    assert config(), 'ci/repos.json is empty'
+    print('selftest ok:', len(want), 'failure lines parsed;', len(config()), 'repos configured')
+
+
+def main():
+    ap = argparse.ArgumentParser(description='Our own CI: PR tests on the Mac mini, posted as the siso-ci status.')
+    sub = ap.add_subparsers(dest='cmd', required=True)
+    s = sub.add_parser('serve')
+    s.add_argument('--every', type=int, default=60)
+    sub.add_parser('once')
+    r = sub.add_parser('prune')
+    r.add_argument('--dry-run', action='store_true')
+    r.add_argument('--days', type=float)
+    sub.add_parser('worker')
+    p = sub.add_parser('pr')
+    p.add_argument('repo')
+    p.add_argument('number', type=int)
+    sub.add_parser('selftest')
+    a = ap.parse_args()
+    if a.cmd == 'worker':
+        return worker()
+    if a.cmd == 'selftest':
+        return selftest()
+    if a.cmd == 'pr':
+        global CONTEXT
+        CONTEXT = 'siso-ci/pr'
+        repo = a.repo if '/' in a.repo else f'sisodias/{a.repo}'
+        if repo not in config():
+            sys.exit(f'{repo} is not in ci/repos.json')
+        pr = gh_json('pr', 'view', str(a.number), '--repo', repo, '--json', 'number,headRefOid,baseRefOid')
+        global WORK
+        WORK = os.path.join(WORK, 'workers', 'manual-' + str(a.number))
+        with worker_pool.lock(Path(WORK) / 'worker.lock'):
+            worker_pool.disk_guard(WORK, HOST_CONFIG.get('minimum_free_mb', 2048))
+            result = run_pr(repo, config()[repo], pr, state_load())
+            print(result)
+            return 0 if result == 'success' else 1
+    if a.cmd == 'prune':
+        prune(a.dry_run, a.days)
+        return 0
+    if a.cmd == 'once':
+        return once()
+    return serve(a.every)
+
+
+def serve(every):
+    # A rolling service replacement may overlap while the legacy process drains.
+    # Once upgraded, only one coordinator can own the shared worker slots.
+    try:
+        with runtime_handoff.coordinator_lock(Path(WORK) / 'coordinator.lock') as lock_fd:
+            handoff = runtime_handoff.Handoff(os.path.abspath(__file__), WORK)
+            log('startup identity:', json.dumps(handoff.startup(lock_fd), sort_keys=True))
+            log(f'siso-ci serving every {every}s: {", ".join(config())}')
+            controller = worker_pool.Controller(worker_pool.slots(os.path.join(HERE, 'workers.json')), __file__, WORK)
+            trains = Trains()
+            while True:
+                if not controller.active and not trains.active:
+                    self_update(lock_fd)
+                    handoff.attempt(lock_fd)
+                    prune()
+                try:
+                    for receipt in controller.tick(discover_jobs()):
+                        log(json.dumps(receipt))
+                except Exception as e:
+                    log('pass failed:', type(e).__name__)
+                try:
+                    for receipt in trains.tick():
+                        log(json.dumps(receipt))
+                except Exception as e:
+                    log('train pass failed:', type(e).__name__)
+                time.sleep(every)
+    except BlockingIOError:
+        log('another CI coordinator already owns this work root')
+        return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

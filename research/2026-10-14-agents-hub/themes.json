@@ -1,0 +1,17 @@
+{
+  "run": "2026-10-14-agents-hub",
+  "hub": "AGENTS-HUB",
+  "themes": [
+    {"id": "measured-gain", "claim": "Rate skills by measured pass-rate delta; most skills add nothing, curated beat self-written", "evidence": ["arXiv 2602.12670", "arXiv 2603.15401"], "use": "leaderboard headline metric"},
+    {"id": "trust-grading", "claim": "Skills and MCP tools are code-level risk; grade per listing with repo context", "evidence": ["arXiv 2601.10338", "arXiv 2508.14925", "claudskills.com", "Docker MCP Catalog"], "use": "A-F badge on every card"},
+    {"id": "progressive-disclosure", "claim": "Metadata first, body on use, files on demand, under hard byte budgets", "evidence": ["agentskills.io", "Codex skills 2% cap", "AGENTS.md 32 KiB"], "use": "skill authoring lint"},
+    {"id": "simplest-first", "claim": "Function before agent; multi-agent only for breadth-heavy parallel work (~15x tokens)", "evidence": ["Anthropic building effective agents", "Anthropic multi-agent research", "OpenAI practical guide", "Microsoft Agent Framework"], "use": "playbook rule"},
+    {"id": "tool-retrieval", "claim": "At scale, tool retrieval not execution is the bottleneck", "evidence": ["arXiv 2508.01780"], "use": "invest in skill/tool search in Skills Hub"},
+    {"id": "system-design-failures", "claim": "Multi-agent failures are mostly harness/protocol design", "evidence": ["arXiv 2503.13657 MAST"], "use": "harness audit before model swap"},
+    {"id": "verify-loop", "claim": "Give the agent a runnable check; initializer + one-feature workers + progress files", "evidence": ["Anthropic effective harnesses", "ghuntley.com/ralph"], "use": "already in our brain; keep"},
+    {"id": "delta-context", "claim": "Improve playbooks by small deltas and language reflection, not rewrites/RL", "evidence": ["arXiv 2510.04618 ACE", "arXiv 2507.19457 GEPA"], "use": "lesson ledger -> skill updates"},
+    {"id": "one-source-many-harnesses", "claim": "Author once, project to every harness; the plugin bundle (skills+agents+hooks+MCP) is converging", "evidence": ["wshobson/agents", "Factory plugins", "openai/plugins", "Gemini CLI extensions"], "use": "Skills Hub projections"},
+    {"id": "harness-as-unit", "claim": "Leaderboards should rank agent+model with cost, not model alone", "evidence": ["tbench.ai", "HAL", "Artificial Analysis coding agents"], "use": "SISO Bench shape"}
+  ],
+  "ui_composite": "skills.sh leaderboard + Glama facet counts + Terminal-Bench view switch + LMArena rank spread + trust grade per card, headline = measured gain"
+}

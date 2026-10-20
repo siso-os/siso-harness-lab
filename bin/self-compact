@@ -11,7 +11,10 @@ the resume prompt, and exits.
   self-compact go --checkpoint PATH [--focus TEXT] [--resume TEXT] [--timeout MIN]
   self-compact status                      the waiter armed for this pane, if any
 
-Works for herdr's own Claude panes and for Agent Base hosted chats (siso-host). Refuses outside herdr (no HERDR_PANE_ID), and when a waiter is already armed for the pane. It only ever types into the pane
+Works for herdr's own Claude panes and for Agent Base hosted chats (siso-host). In a SISO Code thread (no herdr pane,
+but CLAUDE_CODE_SESSION_ID set) `go` asks SISO Code instead: POST /api/siso/compact queues `/compact` and the resume
+prompt behind the caller's own turn, on its own thread only (apps/server/src/siso/compactRoute.ts in siso-code).
+Refuses when neither applies, and when a waiter is already armed for the pane. It only ever types into the pane
 in HERDR_PANE_ID, the caller's own. Nothing is scheduled and nothing compacts an agent: the
 context ping (hooks/context-ping.mjs) only informs, and the agent decides (DECISIONS.md, 1 Oct). Log: ~/.local/state/self-compact/log.jsonl.
 """
@@ -180,6 +183,38 @@ def refuse(msg):
     sys.exit(3)
 
 
+SISO_CODE_URL = os.environ.get("SISO_CODE_URL", "http://127.0.0.1:5490")
+
+
+def siso_session():
+    """The caller's Claude session id when it runs in a SISO Code thread rather than a herdr pane."""
+    if os.environ.get("HERDR_ENV") == "1" and os.environ.get("HERDR_PANE_ID"):
+        return None
+    return os.environ.get("CLAUDE_CODE_SESSION_ID") or None
+
+
+def siso_go(a, session):
+    import urllib.error
+    import urllib.request
+    checkpoint = str(Path(a.checkpoint).expanduser().resolve())
+    resume = a.resume or f"Compacted. Read {checkpoint} and continue."
+    if a.focus:
+        resume += f" Keep in view: {a.focus}"
+    req = urllib.request.Request(
+        f"{SISO_CODE_URL}/api/siso/compact", method="POST",
+        data=json.dumps({"session": session, "resume": resume}).encode(),
+        headers={"content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            out = json.load(r)
+    except urllib.error.HTTPError as e:
+        refuse(f"SISO Code said {e.code}: {e.read().decode(errors='replace')[:200]}")
+    except OSError as e:
+        refuse(f"SISO Code is not answering at {SISO_CODE_URL} ({e})")
+    log("armed", mode="siso-code", thread=out.get("threadId"), session=session, checkpoint=checkpoint)
+    print(f"armed (SISO Code thread {out.get('threadId')}): /compact runs when this turn ends, then the resume prompt")
+
+
 def own_pane():
     pane = os.environ.get("HERDR_PANE_ID")
     if os.environ.get("HERDR_ENV") != "1" or not pane:
@@ -189,6 +224,9 @@ def own_pane():
 
 
 def cmd_check(_a):
+    if siso_session():
+        print("self-compact: in a SISO Code thread; its context meter (beside the composer) shows the number")
+        return
     pane = own_pane()
     pct = ctx_pct(pane)
     if pct is None:
@@ -205,9 +243,12 @@ def cmd_status(_a):
 
 
 def cmd_go(a):
-    pane = own_pane()
     if not Path(a.checkpoint).expanduser().is_file():
         refuse(f"checkpoint {a.checkpoint} does not exist; write it first")
+    session = siso_session()
+    if session:
+        return siso_go(a, session)
+    pane = own_pane()
     held = live_waiter(pane)
     if held:
         refuse(f"a waiter (pid {held['pid']}) is already armed for {pane} since {held['armed']}")

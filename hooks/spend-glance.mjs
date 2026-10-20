@@ -13,7 +13,7 @@
 // Reads: STATE/burn/samples.jsonl (context-ping, this login), the Agent Base host records (live chats and their context),
 // the load average and swap. Env (tests): CONTEXT_PING_STATE, AB_HOSTS_DIR, CLAUDE_CONFIG_DIR, SPEND_GLANCE_NOW.
 
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir, loadavg, cpus } from "node:os";
 import path from "node:path";
@@ -66,6 +66,18 @@ function swapPct() {
 const k = n => `${Math.round(n / 1000)}k`;
 const hm = ms => `${Math.floor(ms / 3_600_000)}h${String(Math.round((ms % 3_600_000) / 60_000)).padStart(2, "0")}`;
 
+// Once per SPEND_GLANCE_EVERY_MS (default 10 min) per session (14 Oct, TOKENS: it fired 1,802 times in 24h, ~365k tokens,
+// mostly the same text to a seat fanning out several agents in a row). Workflows always get it.
+export function due(sid, env = process.env, now = Number(env.SPEND_GLANCE_NOW) || Date.now()) {
+  if (!sid) return true;
+  const every = Number(env.SPEND_GLANCE_EVERY_MS ?? 600_000);
+  const dir = env.SPEND_GLANCE_STATE || path.join(homedir(), ".local", "state", "spend-glance");
+  const f = path.join(dir, String(sid).replace(/[^\w-]/g, "_"));
+  try { if (now - Number(readFileSync(f, "utf8")) < every) return false; } catch {}
+  try { mkdirSync(dir, { recursive: true }); writeFileSync(f, String(now)); } catch {}
+  return true;
+}
+
 export function glance(env = process.env, now = Number(env.SPEND_GLANCE_NOW) || Date.now(), load = loadavg()[0], swap = swapPct()) {
   const state = env.CONTEXT_PING_STATE || path.join(homedir(), ".local", "state", "context-ping");
   const hosts = env.AB_HOSTS_DIR || path.join(homedir(), ".local", "state", "agent-base", "hosts");
@@ -104,6 +116,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       // asks for Opus should say why, against these numbers. HALO's six-agent Opus workflow was ~45% of a 4 h window.
       if (/^(Agent|Task|Workflow)$/.test(input.tool_name || "")) {
         const why = input.tool_name === "Workflow" ? "\nWorkflow agents run on Haiku 5.5 unless an agent asks for model 'opus'; give each Opus agent a one-line reason (judgement Haiku can't do, priority) and keep the count small." : "";
+        if (input.tool_name !== "Workflow" && !due(input.session_id)) process.exit(0);
         process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: glance() + why } }));
       }
     } catch {}

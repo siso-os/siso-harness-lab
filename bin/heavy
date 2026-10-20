@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
-"""Run heavy work in machine-wide slots, admitting registered waiters in order.
+"""Run heavy work in machine-wide slots, admitting waiters in order within each class.
 
 heavy -- COMMAND | heavy --status | heavy --hold MINUTES WHY | heavy --release
+heavy --class quick -- COMMAND  (uses idle capacity; yields to waiting bulk work)
+heavy --on mini --cwd ABS_REMOTE_WORKTREE -- COMMAND
+heavy --class quick --on mini --cwd /absolute/remote/worktree -- pytest -q
+Remote execution requires SSH host mac-mini; failures never fall back locally.
 HEAVY_SLOTS initializes a new pool (default 5); later overrides must match it.
-HEAVY_DIR defaults to ~/.cache/siso-heavy; HEAVY_QOS to utility.
+HEAVY_DIR defaults to ~/.cache/siso-heavy; HEAVY_QOS to utility for bulk, off for quick.
+HEAVY_TIMEOUT ends a job after N minutes (default quick 20, bulk 120; 0 = never).
+Overflow: a first-in-line waiter that has waited HEAVY_OVERFLOW_AFTER seconds (default 10) takes one of
+HEAVY_OVERFLOW_SLOTS (default 3) extra slots when the machine has room (load below HEAVY_OVERFLOW_LOAD,
+default 2 x cores; memory level at least HEAVY_OVERFLOW_MEM percent, default 20), so a long job never
+parks everyone behind it while the laptop is idle. HEAVY_OVERFLOW_SLOTS=0 turns it off. Every admission
+is appended to $HEAVY_DIR/waits.jsonl (wait, class, slot, command, load).
 Slot locks survive exec and release when their last inherited descriptor closes.
 Existing processes are never interrupted. Queue entries are kernel-leased files:
 a crashed waiter cannot block the queue, and holds are rechecked at admission.
@@ -13,6 +23,9 @@ import fcntl
 import json
 import math
 import os
+import shlex
+import signal
+import subprocess
 import sys
 import time
 
@@ -22,6 +35,42 @@ SLOT_DIR = os.path.join(ROOT, "slots")
 QUEUE_DIR = os.path.join(ROOT, "queue")
 HOLD = os.path.join(ROOT, "hold")
 LEASE = "SISO_HEAVY_LEASE"
+WAITS = os.path.join(ROOT, "waits.jsonl")
+
+
+def env_number(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return float(default)
+
+
+OVERFLOW_SLOTS = int(env_number("HEAVY_OVERFLOW_SLOTS", 3))
+OVERFLOW_AFTER = env_number("HEAVY_OVERFLOW_AFTER", 10)
+OVERFLOW_LOAD = env_number("HEAVY_OVERFLOW_LOAD", 2 * (os.cpu_count() or 8))
+OVERFLOW_MEM = env_number("HEAVY_OVERFLOW_MEM", 20)
+
+
+def machine_has_room():
+    """Load average and free-memory level; any reading that fails counts as no room."""
+    try:
+        if os.getloadavg()[0] >= OVERFLOW_LOAD:
+            return False
+        level = subprocess.run(["/usr/sbin/sysctl", "-n", "kern.memorystatus_level"],
+                               capture_output=True, text=True, timeout=2).stdout
+        return float(level) >= OVERFLOW_MEM
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
+def record_wait(ticket, job_class, slot, waited, argv):
+    try:
+        with open(WAITS, "a") as f:
+            f.write(json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "ticket": int(ticket[:-5]), "class": job_class,
+                                "slot": slot, "overflow": slot >= SLOTS, "wait": round(waited, 3),
+                                "cmd": os.path.basename(argv[0]), "cwd": os.getcwd(), "load1": round(os.getloadavg()[0], 1)}) + "\n")
+    except OSError:
+        pass  # The ledger never blocks work.
 
 
 def prepare():
@@ -72,7 +121,7 @@ def try_slot(i):
 
 def holders():
     out = []
-    for i in range(SLOTS):
+    for i in range(SLOTS + OVERFLOW_SLOTS):
         fd = try_slot(i)
         if fd is not None:
             os.close(fd)
@@ -83,6 +132,22 @@ def holders():
         except OSError:
             out.append(f"slot {i}: busy")
     return out
+
+
+def running_classes():
+    counts = {"quick": 0, "bulk": 0}
+    for slot in range(SLOTS):
+        fd = try_slot(slot)
+        if fd is not None:
+            os.close(fd)
+            continue
+        try:
+            with open(slot_path(slot) + ".info") as f:
+                quick = f.read().endswith("(class quick)")
+        except OSError:
+            quick = False  # Legacy or unknown holders consume bulk capacity.
+        counts["quick" if quick else "bulk"] += 1
+    return counts
 
 
 def hold_info():
@@ -104,8 +169,17 @@ def hold_info():
     return until, why.strip()
 
 
-def oldest_waiter():
+def waiter_class(path):
+    # The pid/registered prefix stays readable by pre-lane wrappers. Their tickets
+    # have no class suffix and remain ordinary bulk work during an upgrade.
+    with open(path) as f:
+        tail = f.read().split()[-2:]
+    return tail[1] if len(tail) == 2 and tail[0] == "class" and tail[1] in ("quick", "barrier") else "bulk"
+
+
+def oldest_waiter(job_class=None):
     """Prune only unlocked leases; PIDs, ages and command names are not liveness."""
+    first = None
     for name in sorted(n for n in os.listdir(QUEUE_DIR) if n.endswith(".wait")):
         path = os.path.join(QUEUE_DIR, name)
         fd = os.open(path, os.O_RDWR)
@@ -113,14 +187,16 @@ def oldest_waiter():
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                return name
+                if first is None and (job_class is None or waiter_class(path) == job_class):
+                    first = name
+                continue
             os.unlink(path)
         finally:
             os.close(fd)
-    return None
+    return first
 
 
-def register():
+def register(job_class="bulk"):
     with admission_lock():
         counter = os.path.join(ROOT, "ticket")
         try:
@@ -133,10 +209,21 @@ def register():
         name = f"{ticket:020d}.wait"
         fd = os.open(os.path.join(QUEUE_DIR, name), os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
-        os.write(fd, f"pid {os.getpid()} registered {time.time()}\n".encode())
+        os.write(fd, f"pid {os.getpid()} registered {time.time()} class {job_class}\n".encode())
         with open(counter, "w") as f:
             f.write(str(ticket))
-        return name, fd
+        barrier = None
+        if job_class == "quick" and SLOTS > 1:
+            # Pre-class wrappers choose the first live filename. A leased
+            # barrier makes them leave the next free slot to waiting quick
+            # work. Keep the real ticket numeric: already-running class-aware
+            # wrappers must still agree on FIFO order during this upgrade.
+            barrier_name = f"!{ticket:020d}.wait"
+            barrier_fd = os.open(os.path.join(QUEUE_DIR, barrier_name), os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+            fcntl.flock(barrier_fd, fcntl.LOCK_EX)
+            os.write(barrier_fd, f"pid {os.getpid()} class barrier\n".encode())
+            barrier = barrier_name, barrier_fd
+        return name, fd, barrier
 
 
 def inherited_slot():
@@ -153,13 +240,57 @@ def inherited_slot():
     raise ValueError("nested heavy is not supported; run the inner command directly under the existing outer heavy wrapper")
 
 
-def execute(argv, slot, fd):
+TIMEOUT_MINUTES = {"quick": 20, "bulk": 120}
+
+
+def watchdog(job_class):
+    # A hung job held slot 1 for 20 hours (17 Oct). A detached grandchild ends
+    # the command after HEAVY_TIMEOUT minutes (0 = never). It closes every
+    # inherited descriptor first, so it neither holds the slot nor keeps the
+    # caller's output pipe open.
+    try:
+        minutes = float(os.environ.get("HEAVY_TIMEOUT", TIMEOUT_MINUTES[job_class]))
+    except ValueError:
+        minutes = TIMEOUT_MINUTES[job_class]
+    if not minutes > 0 or minutes == float("inf"):
+        return
+    target = os.getpid()
+    if os.fork():
+        os.wait()
+        return
+    try:
+        os.setsid()
+        if os.fork():
+            os._exit(0)
+        null = os.open(os.devnull, os.O_RDWR)
+        for std in (0, 1, 2):
+            os.dup2(null, std)
+        os.closerange(3, 65536)
+        deadline = time.monotonic() + minutes * 60
+        while time.monotonic() < deadline:
+            time.sleep(min(5, max(0.05, deadline - time.monotonic())))
+            os.kill(target, 0)
+        os.kill(target, signal.SIGTERM)
+        for _ in range(100):
+            time.sleep(0.1)
+            os.kill(target, 0)
+        os.kill(target, signal.SIGKILL)
+    except OSError:
+        pass  # The command finished on its own.
+    finally:
+        os._exit(0)
+
+
+def execute(argv, slot, fd, job_class="bulk"):
     os.set_inheritable(fd, True)
     os.environ[LEASE] = json.dumps({"root": ROOT, "slot": slot, "fd": fd})
     os.environ.setdefault("VITEST_MAX_THREADS", "2")
     os.environ.setdefault("VITEST_MAX_FORKS", "2")
     os.environ.setdefault("UV_THREADPOOL_SIZE", "2")
-    qos = os.environ.get("HEAVY_QOS", "utility")
+    # Quick checks are what agents sit waiting on: utility QoS parks them on
+    # efficiency cores behind throttled I/O, so only bulk work is demoted.
+    qos = os.environ.get("HEAVY_QOS", "off" if job_class == "quick" else "utility")
+    watchdog(job_class)
     if qos != "off" and os.path.exists("/usr/sbin/taskpolicy"):
         argv = ["/usr/sbin/taskpolicy", "-c", qos, *argv]
     try:
@@ -169,7 +300,45 @@ def execute(argv, slot, fd):
         return 127
 
 
+def remote(argv, job_class=None):
+    if (len(argv) < 6 or argv[:3] != ["--on", "mini", "--cwd"]
+            or not os.path.isabs(argv[3]) or argv[4] != "--"):
+        print("heavy: usage: heavy --on mini --cwd ABS_REMOTE_WORKTREE -- COMMAND", file=sys.stderr)
+        return 2
+    script = (
+        'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; '
+        f"cd {shlex.quote(argv[3])} && "
+        'exec "$HOME/SISO_Workspace/SISO_Agents/siso-harness-lab/bin/heavy" '
+        + (f"--class {job_class} " if job_class else "") + '-- '
+        + shlex.join(argv[5:])
+    )
+    # Dispatch before prepare/register: the sending machine never takes a slot.
+    # exec keeps stdin/stdout/stderr attached and returns SSH's remote exit status.
+    try:
+        os.execvp("ssh", ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+                          "-o", "ConnectionAttempts=1", "-o", "RemoteCommand=none",
+                          "mac-mini", script])
+    except OSError as error:
+        print(f"heavy: ssh: {error.strerror}", file=sys.stderr)
+        return 127
+
+
 def main(argv):
+    job_class = os.environ.get("HEAVY_CLASS", "bulk")
+    explicit_class = "HEAVY_CLASS" in os.environ
+    if argv[:1] == ["--class"]:
+        if len(argv) < 2:
+            print("heavy: --class requires quick or bulk", file=sys.stderr)
+            return 2
+        job_class, argv, explicit_class = argv[1], argv[2:], True
+    if job_class not in ("quick", "bulk"):
+        print("heavy: class must be quick or bulk", file=sys.stderr)
+        return 2
+    if argv[:1] in (["--help"], ["-h"]):
+        print(__doc__.strip())
+        return 0
+    if argv[:1] == ["--on"]:
+        return remote(argv, job_class if explicit_class else None)
     try:
         prepare()
     except (ValueError, OSError) as error:
@@ -179,10 +348,15 @@ def main(argv):
         with admission_lock():
             oldest_waiter()
             busy, hold = holders(), hold_info()
-            waiting = len([n for n in os.listdir(QUEUE_DIR) if n.endswith(".wait")])
+            classes = [waiter_class(os.path.join(QUEUE_DIR, n))
+                       for n in os.listdir(QUEUE_DIR) if n.endswith(".wait")]
+            waiting, quick = sum(c != "barrier" for c in classes), classes.count("quick")
         if hold:
             print(f"HELD: {hold[1]} (new jobs wait)")
-        print(f"{len(busy)}/{SLOTS} slots busy; {waiting} registered waiters")
+        extra = sum(1 for b in busy if int(b.split(":")[0].split()[1]) >= SLOTS)
+        print(f"{len(busy)-extra}/{SLOTS} slots busy" + (f" (+{extra} overflow of {OVERFLOW_SLOTS})" if OVERFLOW_SLOTS else "") + f"; {waiting} registered waiters")
+        if SLOTS > 1:
+            print(f"quick lane: 1 of {SLOTS} slots reserved when bulk waits; {quick} quick / {waiting-quick} bulk waiting")
         for line in busy:
             print("  " + line)
         return 0
@@ -220,15 +394,25 @@ def main(argv):
         print(f"heavy: {error}", file=sys.stderr)
         return 2
     start, told = time.monotonic(), False
-    ticket, queue_fd = register()
+    ticket, queue_fd, barrier = register(job_class)
     try:
         while True:
             with admission_lock():
-                head, hold = oldest_waiter(), hold_info()
-                if head == ticket and not hold:
-                    for slot in range(SLOTS):
+                bulk_waiter = oldest_waiter("bulk") if SLOTS > 1 else None
+                head, hold = oldest_waiter(job_class if SLOTS > 1 else None), hold_info()
+                counts = running_classes() if SLOTS > 1 else None
+                quick_limit = 1 if bulk_waiter else SLOTS
+                room = (SLOTS == 1 or counts[job_class] <
+                        (quick_limit if job_class == "quick" else SLOTS-1))
+                if head == ticket and not hold and room:
+                    slots = [SLOTS-1, *range(SLOTS-1)] if job_class == "quick" else range(SLOTS)
+                    for slot in slots:
                         fd = try_slot(slot)
                         if fd is not None:
+                            # Publish under the same admission mutex as the slot
+                            # choice so another new wrapper sees its actual class.
+                            with open(slot_path(slot) + ".info", "w") as f:
+                                f.write(f"pid {os.getpid()} since {time.strftime('%H:%M:%S')} in {os.getcwd()}: {os.path.basename(argv[0])} (class {job_class})")
                             os.unlink(os.path.join(QUEUE_DIR, ticket))
                             print(f"heavy: ticket {int(ticket[:-5])} admitted slot {slot} after {time.monotonic()-start:.3f}s pid {os.getpid()}", file=sys.stderr, flush=True)
                             break
@@ -236,22 +420,38 @@ def main(argv):
                         fd = None
                 else:
                     fd = None
+                if (fd is None and head == ticket and not hold and OVERFLOW_SLOTS
+                        and time.monotonic() - start >= OVERFLOW_AFTER and machine_has_room()):
+                    # Still first in line, and the machine is not busy: do not keep everyone behind a long job.
+                    for slot in range(SLOTS, SLOTS + OVERFLOW_SLOTS):
+                        fd = try_slot(slot)
+                        if fd is not None:
+                            with open(slot_path(slot) + ".info", "w") as f:
+                                f.write(f"pid {os.getpid()} since {time.strftime('%H:%M:%S')} in {os.getcwd()}: {os.path.basename(argv[0])} (class {job_class} overflow)")
+                            os.unlink(os.path.join(QUEUE_DIR, ticket))
+                            print(f"heavy: ticket {int(ticket[:-5])} admitted slot {slot} after {time.monotonic()-start:.3f}s pid {os.getpid()} (overflow: machine has room)", file=sys.stderr, flush=True)
+                            break
+                    else:
+                        fd = None
             if fd is not None:
+                record_wait(ticket, job_class, slot, time.monotonic() - start, argv)
                 break
             if not told:
-                print(f"heavy: ticket {int(ticket[:-5])} waiting for admission pid {os.getpid()}" + (f" ({hold[1]})" if hold else ""), file=sys.stderr, flush=True)
+                blockers = "; ".join(h[:90] for h in holders()[:3])
+                print(f"heavy: ticket {int(ticket[:-5])} waiting for admission pid {os.getpid()}" + (f" ({hold[1]})" if hold else "") + (f" behind: {blockers}" if blockers else ""), file=sys.stderr, flush=True)
                 told = True
             time.sleep(0.1)
     finally:
         with admission_lock():
-            try:
-                os.unlink(os.path.join(QUEUE_DIR, ticket))
-            except FileNotFoundError:
-                pass
+            for name in [ticket, *([barrier[0]] if barrier else [])]:
+                try:
+                    os.unlink(os.path.join(QUEUE_DIR, name))
+                except FileNotFoundError:
+                    pass
         os.close(queue_fd)
-    with open(slot_path(slot) + ".info", "w") as f:
-        f.write(f"pid {os.getpid()} since {time.strftime('%H:%M:%S')} in {os.getcwd()}: {os.path.basename(argv[0])}")
-    return execute(argv, slot, fd)
+        if barrier:
+            os.close(barrier[1])
+    return execute(argv, slot, fd, job_class)
 
 
 if __name__ == "__main__":

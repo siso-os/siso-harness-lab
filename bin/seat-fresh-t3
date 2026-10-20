@@ -1,0 +1,404 @@
+#!/usr/bin/env python3
+"""Rotate idle SISO Code seats through the existing pairing + MCP OAuth channel."""
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import sqlite3
+import tempfile
+import sys
+import time
+import uuid
+import hashlib
+import base64
+import secrets
+import subprocess
+import urllib.request
+import urllib.parse
+import urllib.error
+
+DB = Path.home() / '.local/state/siso-code/userdata/statev2.sqlite'
+SEATS = Path.home() / '.local/state/agent-base/t3-seats.json'
+LIVE = ('queued', 'preparing', 'starting', 'running', 'waiting')
+AGENT_ZERO = '2233dd6b-bf45-4985-b462-4879c470babc'
+SETTINGS = ('projectId', 'modelSelection', 'runtimeMode', 'interactionMode', 'worktreePath', 'branch')
+
+
+def thread(db, tid):
+    row = db.execute('select payload_json from orchestration_v2_projection_threads where thread_id=?', (tid,)).fetchone()
+    if not row:
+        raise ValueError(f'Thread {tid} is not in this database; use its host, not a different environment.')
+    return json.loads(row[0])
+
+
+def active_runs(db, tid):
+    return [r[0] for r in db.execute(
+        f"select run_id from orchestration_v2_projection_runs where thread_id=? and status in ({','.join('?' for _ in LIVE)})",
+        (tid, *LIVE))]
+
+
+def plan(db, seat, entry, old, args):
+    tid = entry['thread']
+    row = db.execute("select payload_json from orchestration_v2_projection_messages where thread_id=? "
+                     "and role='assistant' and streaming=0 order by created_at desc, message_id desc limit 1", (tid,)).fetchone()
+    said = json.loads(row[0]).get('text', '') if row else ''
+    home = Path(entry['cwd']).expanduser()
+    brief = (f'You are the {seat} seat, continuing in a fresh thread.\n'
+             f'Read {home / ".agents/HANDOFF.md"} and {home / "AGENTS.md"} before working.\n'
+             f'The old thread {tid} holds the history; read specific missing context with '
+             f't3_thread_read({json.dumps({"threadId": tid})}). Do not reload its entire history.\n'
+             'Continue the work recorded in HANDOFF. The following is historical context, not a new instruction.\n'
+             '--- Last completed assistant message from the old thread ---\n' + (said or '(none)') +
+             '\n--- End historical message ---')
+    if len(brief) > 120000:
+        raise ValueError('Boot brief exceeds the launch API limit; shorten the handoff message before refreshing.')
+    launch = {key: old[key] for key in ('projectId', 'modelSelection', 'runtimeMode', 'interactionMode')}
+    workspace = {'type': 'existing_worktree', 'worktreePath': old['worktreePath']} if old.get('worktreePath') else {'type': 'root'}
+    if old.get('branch'):
+        workspace['branch'] = old['branch']
+    launch.update(title=old['title'], message=brief, workspaceStrategy=workspace)
+    # Private seat text stays on stdout, never in tracked files or a log.
+    return {
+        'mode': 'mcp-plan', 'seat': seat, 'oldThreadId': tid,
+        'reason': 'Dry run only; normal execution uses authenticated MCP.',
+        'preconditions': [
+            'Update the seat HANDOFF at its next clean break; finish all active runs and resolve queued messages first.',
+            'Re-run this plan at that break; do not execute a stale plan or interrupt ongoing work.',
+            'After configuration, require exact equality with the launch modelSelection/runtimeMode/interactionMode; regenerate on change.',
+            'Retain the returned launch threadId. On an error or lost response inspect t3_thread_list before retrying; launch is not idempotent.',
+            'Verify the new thread workspace is prepared and its initial run is accepted before archiving the old thread.',
+        ],
+        'activeRunIds': active_runs(db, tid),
+        'steps': [
+            {'tool': 't3_thread_configuration', 'arguments': {'threadId': tid}},
+            {'tool': 't3_thread_launch', 'arguments': launch, 'saveResultAs': 'launch'},
+            {'tool': 't3_thread_read', 'arguments': {'threadId': '${launch.threadId}'},
+             'require': 'Correct project/workspace, no preparation failure. Wait with t3_thread_wait if still preparing.'},
+            {'tool': 't3_thread_organize', 'arguments': {'threadId': tid, 'action': 'archive'}},
+            {'shellArgv': [str(Path(__file__).resolve()), seat, '--db', str(args.db), '--seats', str(args.seats),
+                           '--adopt', '${launch.threadId}', '--expected-thread', tid],
+             'require': 'Run only after archive succeeds; substitute the saved launch.threadId, never launch again to retry adoption.'},
+        ],
+    }
+
+
+def adopt(db, seat, args):
+    # Separate lock file survives the atomic rename. Re-read the whole map under
+    # the lock so unrelated seat metadata is preserved, and compare before write.
+    with open(str(args.seats) + '.lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        original = args.seats.read_bytes()
+        seats = json.loads(original)
+        entry = seats[seat]
+        if entry.get('thread') == args.adopt and entry.get('previous_thread') == args.expected_thread:
+            return {'seat': seat, 'thread': args.adopt, 'status': 'already-adopted'}
+        if entry.get('thread') != args.expected_thread or args.adopt == args.expected_thread:
+            raise ValueError('Seat changed or replacement equals old thread; refusing to overwrite.')
+        old, new = thread(db, args.expected_thread), thread(db, args.adopt)
+        if not old.get('archivedAt') or new.get('archivedAt') or new.get('deletedAt'):
+            raise ValueError('Old thread must be archived and replacement must be available before adoption.')
+        if active_runs(db, args.expected_thread):
+            raise ValueError('Old thread still has active/queued runs; finish the clean break before adoption.')
+        if any(old.get(key) != new.get(key) for key in SETTINGS):
+            raise ValueError('Replacement project, settings or workspace differ; refusing adoption.')
+        entry.update(thread=args.adopt, previous_thread=args.expected_thread)
+        with tempfile.NamedTemporaryFile(mode='w', dir=args.seats.parent, prefix='.seat-fresh-', delete=False) as out:
+            temp = Path(out.name)
+            os.fchmod(out.fileno(), args.seats.stat().st_mode & 0o777)
+            json.dump(seats, out, indent=2)
+            out.write('\n')
+            out.flush()
+            os.fsync(out.fileno())
+        try:
+            if args.seats.read_bytes() != original:
+                raise ValueError('Seat map changed concurrently; retry adoption with the same replacement ID.')
+            os.replace(temp, args.seats)
+        finally:
+            if temp.exists():
+                temp.unlink()
+    return {'seat': seat, 'thread': args.adopt, 'previous_thread': args.expected_thread, 'status': 'adopted'}
+
+
+def atomic_json(path, value, mode=0o600):
+    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, prefix='.seat-fresh-', delete=False) as out:
+        temp = Path(out.name)
+        os.fchmod(out.fileno(), mode)
+        json.dump(value, out, indent=2)
+        out.write('\n')
+        out.flush()
+        os.fsync(out.fileno())
+    os.replace(temp, path)
+
+
+def idle(db, tid):
+    if active_runs(db, tid):
+        raise ValueError('Seat has active/queued runs; skipped.')
+    last = db.execute('select run_id,status,completed_at from orchestration_v2_projection_runs '
+                      'where thread_id=? order by ordinal desc limit 1', (tid,)).fetchone()
+    if not last or last[1] != 'completed' or not last[2]:
+        raise ValueError('Last turn must be completed; skipped.')
+    return last[0]
+
+
+class Mcp:
+    """Existing CLI pairing grant -> OAuth PKCE -> MCP (no signing-key access)."""
+    def __init__(self, args):
+        userdata = args.db.parent
+        runtime = json.loads((userdata / 'server-runtime.json').read_text())
+        self.origin = runtime['origin']
+        url = urllib.parse.urlsplit(self.origin)
+        if url.scheme != 'http' or url.hostname not in ('127.0.0.1', 'localhost', '::1'):
+            raise ValueError('Refusing to send local credentials outside the loopback server.')
+        self.session = None
+        self.token = None
+        self.cache = args.seats.parent / 'seat-fresh-auth.json'
+        if self.cache.exists():
+            if self.cache.stat().st_mode & 0o077:
+                raise ValueError('Auth cache must have mode 600.')
+            cached = json.loads(self.cache.read_text())
+            if cached.get('origin') == self.origin and cached.get('expiresAt', 0) > time.time() + 60:
+                self.token = cached['token']
+        if not self.token:
+            self.authorize(userdata)
+        initialize = {'protocolVersion': '2025-06-18', 'capabilities': {},
+                      'clientInfo': {'name': 'siso-seat-fresh', 'version': '1.0'}}
+        try:
+            self.rpc('initialize', initialize)
+        except ValueError as error:
+            if 'HTTP 401' not in str(error):
+                raise
+            self.authorize(userdata)
+            self.rpc('initialize', initialize)
+        self.rpc('notifications/initialized', None, notification=True)
+
+    def post(self, path, body, form=False, headers=None):
+        data = urllib.parse.urlencode(body).encode() if form else json.dumps(body).encode()
+        request = urllib.request.Request(self.origin + path, data=data, headers={
+            'Content-Type': 'application/x-www-form-urlencoded' if form else 'application/json',
+            **(headers or {})})
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return response.headers, response.read().decode()
+        except urllib.error.HTTPError as error:
+            # Never expose request/response bodies containing credentials or private messages.
+            raise ValueError(f'SISO Code {path} returned HTTP {error.code}') from None
+        except urllib.error.URLError:
+            raise ValueError('SISO Code transport unavailable; retry will reconcile any pending launch.') from None
+
+    def authorize(self, userdata):
+        cli = Path.home() / '.local/share/siso-code/app/t3/dist/bin.mjs'
+        node = Path.home() / '.local/bin/node'
+        proc = subprocess.run([str(node), str(cli), 'auth', 'pairing', 'create',
+                               '--base-dir', str(userdata.parent), '--ttl', '5m',
+                               '--label', 'seat-fresh automation', '--json'],
+                              capture_output=True, text=True, timeout=60)
+        if proc.returncode:
+            raise ValueError('Existing SISO Code auth pairing CLI failed (output withheld).')
+        grant = json.loads(proc.stdout)['credential']
+        redirect = 'http://127.0.0.1/seat-fresh-callback'
+        _, raw = self.post('/oauth/mcp/register', {'client_name': 'SISO seat refresh', 'redirect_uris': [redirect]})
+        client = json.loads(raw)['client_id']
+        verifier = secrets.token_urlsafe(48)
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
+        state = secrets.token_urlsafe(24)
+        authorization = {'client_id': client, 'redirect_uri': redirect, 'response_type': 'code',
+                         'code_challenge': challenge, 'code_challenge_method': 'S256',
+                         'state': state, 'resource': self.origin + '/mcp'}
+        _, raw = self.post('/oauth/mcp/decision', {'authorization': authorization,
+                           'decision': {'_tag': 'pairing-code', 'access': 'full-access', 'code': grant}})
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(json.loads(raw)['redirectTo']).query)
+        if query.get('state') != [state] or 'code' not in query:
+            raise ValueError('MCP OAuth approval failed.')
+        _, raw = self.post('/oauth/mcp/token', {'grant_type': 'authorization_code', 'client_id': client,
+                           'redirect_uri': redirect, 'code': query['code'][0], 'code_verifier': verifier,
+                           'resource': self.origin + '/mcp'}, form=True)
+        issued = json.loads(raw)
+        self.token = issued['access_token']
+        atomic_json(self.cache, {'origin': self.origin, 'token': self.token,
+                                'expiresAt': time.time() + issued['expires_in']})
+
+    def rpc(self, method, params, notification=False):
+        request_id = str(uuid.uuid4())
+        body = {'jsonrpc': '2.0', 'method': method}
+        if not notification:
+            body['id'] = request_id
+        if params is not None:
+            body['params'] = params
+        headers = {'Accept': 'application/json, text/event-stream', 'Authorization': 'Bearer ' + self.token,
+                   'mcp-protocol-version': '2025-06-18'}
+        if self.session:
+            headers['mcp-session-id'] = self.session
+        response_headers, raw = self.post('/mcp', body, headers=headers)
+        self.session = response_headers.get('mcp-session-id', self.session)
+        if notification:
+            return
+        payloads = [json.loads(raw)] if raw.lstrip().startswith(('{', '[')) else [
+            json.loads(line[5:].strip()) for line in raw.splitlines() if line.startswith('data:')]
+        for response in payloads:
+            if response.get('id') == request_id:
+                if 'error' in response:
+                    raise ValueError(f'MCP {method} rejected the request (details withheld).')
+                return response['result']
+        raise ValueError('MCP response missing; pending launch will be reconciled before retry.')
+
+    def call(self, tool, arguments):
+        result = self.rpc('tools/call', {'name': tool, 'arguments': arguments})
+        if result.get('isError'):
+            raise ValueError(f'MCP {tool} failed (details withheld).')
+        if 'structuredContent' in result:
+            value = result['structuredContent']
+        else:
+            value = json.loads(next(c['text'] for c in result['content'] if c['type'] == 'text'))
+        if isinstance(value, dict) and value.get('code') and value.get('message'):
+            raise ValueError(f'MCP {tool} refused the operation (details withheld).')
+        return value
+
+
+def save_map(args, seat, old_id, new_id):
+    with open(str(args.seats) + '.lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        original = args.seats.read_bytes()
+        seats = json.loads(original)
+        entry = seats[seat]
+        if entry['thread'] == new_id and entry.get('previous_thread') == old_id:
+            return
+        if entry['thread'] != old_id:
+            raise ValueError('Seat changed concurrently; refusing adoption.')
+        entry.update(thread=new_id, previous_thread=old_id)
+        if args.seats.read_bytes() != original:
+            raise ValueError('Seat map changed concurrently.')
+        atomic_json(args.seats, seats, args.seats.stat().st_mode & 0o777)
+
+
+def rotate(db, seat, args, client=None):
+    # One lock for all invocations; durable journal precedes the non-idempotent launch.
+    with open(str(args.seats) + '.fresh.lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        journal_path = Path(str(args.seats) + '.fresh.json')
+        journal = json.loads(journal_path.read_text()) if journal_path.exists() else {}
+        entry = json.loads(args.seats.read_text())[seat]
+        pending = journal.get(seat)
+        tid = pending['old'] if pending else entry['thread']
+        old = thread(db, tid)
+        if not pending:
+            if old.get('archivedAt') or old.get('deletedAt'):
+                raise ValueError('Seat points at unavailable thread.')
+            idle(db, tid)
+        client = client or Mcp(args)
+        if not pending:
+            config = client.call('t3_thread_configuration', {'threadId': tid})
+            if any(config.get(key) != old.get(key) for key in ('modelSelection', 'runtimeMode', 'interactionMode')):
+                raise ValueError('Configuration changed; retry at next clean break.')
+            launch = plan(db, seat, entry, old, args)['steps'][1]['arguments']
+            pending = {'old': tid, 'marker': 'seat-fresh:' + str(uuid.uuid4()), 'new': None}
+            launch['message'] += '\nRefresh receipt: ' + pending['marker']
+            idle(db, tid)
+            if any(thread(db, tid).get(k) != old.get(k) for k in SETTINGS):
+                raise ValueError('Source configuration changed before launch; retry at next clean break.')
+            journal[seat] = pending
+            atomic_json(journal_path, journal)
+            launched = client.call('t3_thread_launch', launch)
+            pending['new'] = launched['threadId']
+            atomic_json(journal_path, journal)
+        if not pending['new']:
+            found = [r[0] for r in db.execute(
+                "select distinct thread_id from orchestration_v2_projection_messages "
+                "where role='user' and instr(json_extract(payload_json,'$.text'),?) > 0", (pending['marker'],))]
+            if len(found) != 1:
+                raise ValueError('Launch outcome pending; no duplicate launch. Next run will reconcile its receipt.')
+            pending['new'] = found[0]
+            atomic_json(journal_path, journal)
+        new_id = pending['new']
+        client.call('t3_thread_read', {'threadId': new_id, 'view': 'activity', 'limit': 1, 'runLimit': 1})
+        new = thread(db, new_id)
+        if new.get('archivedAt') or new.get('deletedAt') or any(old.get(k) != new.get(k) for k in SETTINGS):
+            raise ValueError('Replacement not ready or settings/workspace differ; old thread retained.')
+        accepted = db.execute('select status from orchestration_v2_projection_runs where thread_id=? '
+                              'order by ordinal desc limit 1', (new_id,)).fetchone()
+        if not accepted or accepted[0] not in (*LIVE, 'completed'):
+            raise ValueError('Replacement initial run not accepted; retry will verify the same thread.')
+        if not old.get('archivedAt'):
+            idle(db, tid)
+            # Check the source has not changed settings while launch was preparing.
+            current = thread(db, tid)
+            if any(current.get(k) != old.get(k) for k in SETTINGS):
+                raise ValueError('Source settings changed; refusing archive.')
+        save_map(args, seat, tid, new_id)
+        if not old.get('archivedAt'):
+            idle(db, tid)
+            client.call('t3_thread_organize', {'threadId': tid, 'action': 'archive'})
+        if not thread(db, tid).get('archivedAt'):
+            raise ValueError('Archive not observed; retry will finish the same rotation.')
+        del journal[seat]
+        atomic_json(journal_path, journal)
+        return {'seat': seat, 'thread': new_id, 'previous_thread': tid, 'status': 'rotated'}
+
+
+def all_long(args):
+    seats = json.loads(args.seats.read_text())
+    journal_path = Path(str(args.seats) + '.fresh.json')
+    journal = json.loads(journal_path.read_text()) if journal_path.exists() else {}
+    with sqlite3.connect(args.db.resolve().as_uri() + '?mode=ro', uri=True, timeout=5) as db:
+        for seat, entry in seats.items():
+            tid = entry.get('thread')
+            if not tid or tid == AGENT_ZERO or seat.casefold() == 'agent zero' or entry.get('runsOn', 'laptop') != 'laptop':
+                continue
+            count = db.execute('select count(*) from orchestration_v2_projection_turn_items where thread_id=?', (tid,)).fetchone()[0]
+            if count <= 800 and seat not in journal:
+                continue
+            try:
+                if seat not in journal:
+                    idle(db, tid)
+                result = plan(db, seat, entry, thread(db, tid), args) if args.dry_run else rotate(db, seat, args)
+                print(json.dumps(result))
+            except (ValueError, KeyError, OSError, sqlite3.Error, TimeoutError, subprocess.TimeoutExpired) as error:
+                print(json.dumps({'seat': seat, 'status': 'skipped', 'reason': str(error)}))
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('seat', nargs='?')
+    ap.add_argument('--all-long', action='store_true', help='Rotate idle seats with more than 800 items, except Agent Zero')
+    ap.add_argument('--dry-run', action='store_true', help='Print the plan without calling MCP or changing local state')
+    ap.add_argument('--db', type=Path, default=DB)
+    ap.add_argument('--seats', type=Path, default=SEATS)
+    ap.add_argument('--adopt', metavar='NEW_THREAD', help='Finish the plan after MCP launch and archive')
+    ap.add_argument('--expected-thread', metavar='OLD_THREAD')
+    args = ap.parse_args()
+    if bool(args.adopt) != bool(args.expected_thread) or (args.adopt and args.dry_run):
+        ap.error('--adopt requires --expected-thread and cannot be combined with --dry-run')
+    if args.all_long:
+        if args.seat or args.adopt:
+            ap.error('--all-long cannot be combined with a seat or --adopt')
+        return all_long(args)
+    if not args.seat:
+        ap.error('a seat or --all-long is required')
+    seats = json.loads(args.seats.read_text())
+    matches = [k for k in seats if k.casefold() == args.seat.casefold()]
+    if len(matches) != 1:
+        raise ValueError('Unknown or ambiguous seat; use its exact t3-seats.json name (e.g. "Agent Zero").')
+    seat = matches[0]
+    entry = seats[seat]
+    if not entry.get('thread') or not entry.get('cwd'):
+        raise ValueError('Seat requires thread and cwd in t3-seats.json.')
+    if entry.get('runsOn', 'laptop') != 'laptop':
+        raise ValueError('Seat runs on another host; run there with its database and seat map.')
+    with sqlite3.connect(args.db.resolve().as_uri() + '?mode=ro', uri=True, timeout=5) as db:
+        old = thread(db, entry['thread'])
+        if not args.adopt and (old.get('archivedAt') or old.get('deletedAt')):
+            raise ValueError('Seat points at an archived/deleted thread; reconcile the seat map first.')
+        if args.adopt:
+            result = adopt(db, seat, args)
+        elif args.dry_run:
+            result = plan(db, seat, entry, old, args)
+        else:
+            result = rotate(db, seat, args)
+    print(json.dumps(result, indent=2))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (ValueError, KeyError, OSError, sqlite3.Error, TimeoutError, subprocess.TimeoutExpired) as error:
+        print(f'seat-fresh-t3: {error}', file=sys.stderr)
+        sys.exit(1)

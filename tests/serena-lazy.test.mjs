@@ -112,7 +112,7 @@ test('producer failure is bounded and owned process closes',async()=>{
  const f=fixture();const started=Date.now();await assert.rejects(prepare({...f.options,env:{...f.options.env,FAKE_FAIL:'init'},timeoutMs:500}),/discovery failed/);assert.ok(Date.now()-started<2000);
 });
 test('production cache miss replaces proxy before consuming stdin',async t=>{
- const f=fixture();const c=start(f,{execFallback:true});t.after(()=>c.close());await boot(c);
+ const f=fixture();const c=start(f,{execFallback:true,env:{...f.options.env,HOME:f.dir}});t.after(()=>c.close());await boot(c);
  c.send({id:2,method:'get'});const r=await c.receive();assert.equal(r.result.pid,c.p.pid);assert.ok(noChildren(c.p.pid));
 });
 test('native Codex arg0 directory changes do not invalidate the catalog',()=>{

@@ -1,0 +1,11 @@
+# HALO CI gates
+
+**Retired 19 Oct (Agent Zero; Shaan: "Halo shouldn't be linked to the Mac Mini").** HALO-AGENCY/halo-streaming is no longer in `repos.json`: its gate is GitHub Actions in its own repo (`.github/workflows/v2.yml`, job `gate`), and its ship queue (`v2/deploy/ship-head.sh`) reads that check. The text below is history.
+
+PR heads use `SISO_CI_MODE=affected`, with `SISO_CI_BASE` resolved to the PR merge-base. The runner posts `siso-ci/affected` to that exact head SHA; full branch runs keep `siso-ci`. Deploy consumers must continue to require the full `siso-ci` result.
+
+Required merge setting: HALO-AGENCY/halo-streaming → Settings → Branches → protection rule for `halo/v2` → Require status checks before merging → `siso-ci/affected`, strict/up-to-date enabled, enforce administrators. Preserve existing required checks. GitHub GET `/repos/HALO-AGENCY/halo-streaming/branches/halo%2Fv2/protection` returned 403: “Upgrade to GitHub Pro or make this repository public to enable this feature.” The private repo remains private. Until its plan permits protection, this PR cannot enforce a server-side merge block; HALO's integrator must verify the status on the exact current PR head before merging.
+
+## Fast PR gate (17 Oct)
+
+PR heads run `ci/halo-pr.sh` (repos.json `pr_script`, backstop `pr_timeout` 330 s), not the repo's `.siso-ci`, which stays the full gate for the branch and the ship train. It skips `npm ci` when `v2/package-lock.json` is unchanged (hash marker in `node_modules`, clone cache in `<work_root>/cache/node_modules`), runs typecheck, typecheck:model, check:model and the tests in parallel, runs only the test files the diff touches (the repo's `v2/ci/changed-tests.mjs` when it has one, else `halo-affected.mjs`; the full suite, cap 300 s, when a shared file changes) with a short `TMPDIR=/tmp/hv2` so Postgres sockets fit, gives every test file 30 s (`--test-timeout`), names the files still running at 100 s, kills the job at 120 s, and drops `build:model` (a deploy step). Per-step seconds print as `[siso-ci-step]`. Scratch, locks and clones are on the internal disk (`workers.json`): the vault is 5x slower for small files and 6 MB/s for writes, and launchd cannot write it (TCC), which is what hung `npm ci` and crashed `com.siso.ci`.
